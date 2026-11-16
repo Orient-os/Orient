@@ -71,6 +71,9 @@ function ensurePrivateStorageDirectory(directory, {
   try {
     leafStats = fs.lstatSync(requested, { bigint: true });
   } catch (error) {
+    if (error.code === 'ENOTDIR') {
+      fail('Private storage ancestor must be a directory', codes.parentInvalid);
+    }
     if (error.code !== 'ENOENT') throw error;
   }
   if (leafStats?.isSymbolicLink()) {

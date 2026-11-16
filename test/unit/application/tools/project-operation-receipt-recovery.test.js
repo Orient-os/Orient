@@ -861,6 +861,34 @@ test('receipt write preserves a pre-existing temporary-file collision it did not
   });
 });
 
+
+test('receipt and intent reads validate the private storage directory before opening files', t => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX symlink directory policy is required');
+    return;
+  }
+
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-receipt-read-boundary-'));
+  const target = path.join(root, 'target');
+  const alias = path.join(root, 'receipts-alias');
+  fsSync.mkdirSync(target, { mode: 0o700 });
+  fsSync.symlinkSync(target, alias, 'dir');
+  t.after(() => fsSync.rmSync(root, { recursive: true, force: true }));
+
+  const store = new ProjectOperationReceiptStore({ directory: alias });
+  const identity = { operationId: 'read-boundary-check', tenantId: 'tenant-a' };
+
+  assert.throws(
+    () => store.read(identity),
+    error => error.code === 'PROJECT_OPERATION_RECEIPT_DIRECTORY_INVALID'
+  );
+  assert.throws(
+    () => store.readIntent(identity),
+    error => error.code === 'PROJECT_OPERATION_RECEIPT_DIRECTORY_INVALID'
+  );
+});
+
+
 test('intent reads tighten permissive files and reject hard-linked intent evidence', async t => {
   if (process.platform === 'win32' || typeof process.getuid !== 'function') {
     t.skip('POSIX file ownership and hard-link checks are required');

@@ -43,6 +43,24 @@ test('canonicalizes a trusted symlink ancestor before creating private descendan
   });
 });
 
+test('rejects a trusted-looking symlink alias when its canonical target has an untrusted owner', () => {
+  withRoot(root => {
+    const canonicalParent = path.join(root, 'untrusted-canonical-parent');
+    fs.mkdirSync(canonicalParent, { mode: 0o700 });
+    const alias = path.join(root, 'platform-alias');
+    fs.symlinkSync(canonicalParent, alias, 'dir');
+    const requested = path.join(alias, 'receipts');
+
+    spoofOwner(canonicalParent, process.getuid() + 10000, () => {
+      assert.throws(
+        () => ensurePrivateStorageDirectory(requested),
+        error => error.code === 'PRIVATE_STORAGE_PARENT_UNTRUSTED'
+      );
+    });
+    assert.equal(fs.existsSync(path.join(canonicalParent, 'receipts')), false);
+  });
+});
+
 test('rejects an attacker-owned sticky ancestor even though the sticky bit is set', () => {
   withRoot(root => {
     const stickyParent = path.join(root, 'attacker-sticky');

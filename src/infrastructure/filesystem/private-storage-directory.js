@@ -103,6 +103,9 @@ function ensurePrivateStorageDirectory(directory, {
       existing = canonical;
       break;
     } catch (error) {
+      if (error.code === 'ENOTDIR') {
+        fail('Private storage ancestor must be a directory', codes.parentInvalid);
+      }
       if (error.code !== 'ENOENT') throw error;
       const parent = path.dirname(existing);
       if (parent === existing) throw error;

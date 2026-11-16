@@ -114,6 +114,9 @@ class ProjectOperationReceiptStore {
   }
 
   readIntent({ operationId, tenantId }) {
+    // Reads are security-sensitive too: validate the complete canonical
+    // storage boundary before resolving or opening a tenant-scoped pathname.
+    this.ensureDirectory();
     const filePath = this.intentPath(operationId, tenantId);
     let intent;
     let fd;
@@ -219,6 +222,9 @@ class ProjectOperationReceiptStore {
   // The verified receipt is authoritative; deleting by pathname after a separate
   // identity check would introduce a time-of-check/time-of-use race.
   read({ operationId, tenantId }) {
+    // Reconciliation may read before any write has initialized this store.
+    // Never let a read bypass the private-directory trust boundary.
+    this.ensureDirectory();
     const filePath = this.receiptPath(operationId, tenantId);
     if (typeof fs.constants.O_NOFOLLOW !== 'number') {
       fail('Safe receipt-file reads are unsupported on this platform', 'PROJECT_OPERATION_RECEIPT_UNSAFE_FILESYSTEM');

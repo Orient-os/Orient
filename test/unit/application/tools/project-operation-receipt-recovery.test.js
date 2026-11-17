@@ -862,6 +862,21 @@ test('receipt write preserves a pre-existing temporary-file collision it did not
 });
 
 
+
+test('receipt and intent reads do not create a missing private storage directory', t => {
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-receipt-read-no-create-'));
+  const missing = path.join(root, 'not-created', 'receipts');
+  t.after(() => fsSync.rmSync(root, { recursive: true, force: true }));
+
+  const store = new ProjectOperationReceiptStore({ directory: missing });
+  const identity = { operationId: 'missing-read', tenantId: 'tenant-a' };
+
+  assert.equal(store.read(identity), null);
+  assert.equal(store.readIntent(identity), null);
+  assert.equal(fsSync.existsSync(missing), false);
+});
+
+
 test('receipt and intent reads validate the private storage directory before opening files', t => {
   if (process.platform === 'win32') {
     t.skip('POSIX symlink directory policy is required');

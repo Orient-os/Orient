@@ -69,8 +69,9 @@ class ProjectOperationReceiptStore {
     return path.join(this.directory, digest(tenantId + '\0' + operationId) + '.json');
   }
 
-  ensureDirectory() {
+  ensureDirectory({ create = true } = {}) {
     this.directory = ensurePrivateStorageDirectory(this.directory, {
+      create,
       repairPermissions: false,
       errorCodes: {
         directoryInvalid: 'PROJECT_OPERATION_RECEIPT_DIRECTORY_INVALID',
@@ -116,7 +117,7 @@ class ProjectOperationReceiptStore {
   readIntent({ operationId, tenantId }) {
     // Reads are security-sensitive too: validate the complete canonical
     // storage boundary before resolving or opening a tenant-scoped pathname.
-    this.ensureDirectory();
+    this.ensureDirectory({ create: false });
     const filePath = this.intentPath(operationId, tenantId);
     let intent;
     let fd;
@@ -224,7 +225,7 @@ class ProjectOperationReceiptStore {
   read({ operationId, tenantId }) {
     // Reconciliation may read before any write has initialized this store.
     // Never let a read bypass the private-directory trust boundary.
-    this.ensureDirectory();
+    this.ensureDirectory({ create: false });
     const filePath = this.receiptPath(operationId, tenantId);
     if (typeof fs.constants.O_NOFOLLOW !== 'number') {
       fail('Safe receipt-file reads are unsupported on this platform', 'PROJECT_OPERATION_RECEIPT_UNSAFE_FILESYSTEM');

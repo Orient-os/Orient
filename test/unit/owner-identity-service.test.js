@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const OwnerIdentityService = require('../../src/core/security/owner-identity-service');
-const createHardLinkOrSkip = require('../../helpers/hard-link-capability');
+const createHardLinkOrSkip = require('../helpers/hard-link-capability');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-owner-identity-'));

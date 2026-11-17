@@ -32,11 +32,15 @@ function defaultTrustedOwners(serviceUid) {
 function ensurePrivateStorageDirectory(directory, {
   mode = 0o700,
   repairPermissions = false,
+  create = true,
   trustedOwnerUids,
   errorCodes = {}
 } = {}) {
   if (typeof directory !== 'string' || !directory.trim()) {
     throw new TypeError('directory is required');
+  }
+  if (typeof create !== 'boolean') {
+    throw new TypeError('create must be a boolean');
   }
   if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
     throw new TypeError('mode must be a valid POSIX permission mode');
@@ -163,6 +167,10 @@ function ensurePrivateStorageDirectory(directory, {
     const isTarget = missing.length === 0 && current === existing;
     validateDirectory(current, isTarget);
   }
+
+  // Read-only validation must not create storage as a side effect. Return the
+  // canonical prospective path after validating every existing ancestor.
+  if (!create) return path.join(existing, ...missing);
 
   // Create missing components one at a time beneath the validated canonical
   // parent, then validate each newly created or concurrently created directory.

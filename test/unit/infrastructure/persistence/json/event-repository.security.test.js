@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
 const EventRepository = require('../../../../../src/infrastructure/persistence/json/event.repository');
+const createHardLinkOrSkip = require('../../../../helpers/hard-link-capability');
 
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-event-repository-'));
@@ -830,9 +831,9 @@ test('EventRepository rejects a symlink alias whose canonical grandparent is unt
   assert.equal(fs.existsSync(path.join(storage, 'events.json')), false);
 });
 
-test('event reads reject hard-linked event files and tighten private file permissions', t => {
+test('event reads tighten permissive file permissions', t => {
   if (process.platform === 'win32') {
-    t.skip('POSIX hard-link and file-mode checks are required');
+    t.skip('POSIX file-mode checks are required');
     return;
   }
   const f = fixture(t);
@@ -840,9 +841,17 @@ test('event reads reject hard-linked event files and tighten private file permis
   fs.chmodSync(repository.filePath, 0o644);
   assert.deepEqual(repository.read(), []);
   assert.equal(fs.statSync(repository.filePath).mode & 0o077, 0);
+});
 
+test('event reads reject hard-linked event files', t => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX hard-link count enforcement is not available');
+    return;
+  }
+  const f = fixture(t);
+  const repository = f.create();
   const linked = path.join(f.root, 'events-hardlink.json');
-  fs.linkSync(repository.filePath, linked);
+  if (!createHardLinkOrSkip(t, fs, repository.filePath, linked)) return;
   assert.throws(
     () => repository.read(),
     error => error.code === 'EVENT_STORAGE_CORRUPT'

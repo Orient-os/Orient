@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 
 const createProjectTools = require('../../../../src/application/tools/project.tools');
 const ProjectOperationReceiptStore = require('../../../../src/infrastructure/execution/project-operation-receipt-store');
+const createHardLinkOrSkip = require('../../../helpers/hard-link-capability');
 
 async function withFixture(run) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-receipt-workspace-'));
@@ -904,9 +905,9 @@ test('receipt and intent reads validate the private storage directory before ope
 });
 
 
-test('intent reads tighten permissive files and reject hard-linked intent evidence', async t => {
+test('intent reads tighten permissive file permissions', async t => {
   if (process.platform === 'win32' || typeof process.getuid !== 'function') {
-    t.skip('POSIX file ownership and hard-link checks are required');
+    t.skip('POSIX file ownership and mode checks are required');
     return;
   }
   const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-intent-file-policy-'));
@@ -925,18 +926,37 @@ test('intent reads tighten permissive files and reject hard-linked intent eviden
   fsSync.chmodSync(intentPath, 0o644);
   assert.equal(store.readIntent(identity).status, 'pending');
   assert.equal(fsSync.statSync(intentPath).mode & 0o077, 0);
+});
 
+test('intent reads reject hard-linked intent evidence', async t => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    t.skip('POSIX hard-link ownership checks are required');
+    return;
+  }
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-intent-hardlink-'));
+  const directory = path.join(root, 'receipts');
+  fsSync.mkdirSync(directory, { mode: 0o700 });
+  t.after(() => fsSync.rmSync(root, { recursive: true, force: true }));
+  const store = new ProjectOperationReceiptStore({ directory });
+  const identity = {
+    operationId: 'intent-hardlink-policy',
+    tenantId: 'tenant-a',
+    workspaceId: 'a'.repeat(64),
+    changeSetHash: 'b'.repeat(64)
+  };
+  store.beginIntent(identity);
+  const intentPath = store.intentPath(identity.operationId, identity.tenantId);
   const hardLink = path.join(root, 'intent-hardlink.json');
-  fsSync.linkSync(intentPath, hardLink);
+  if (!createHardLinkOrSkip(t, fsSync, intentPath, hardLink)) return;
   assert.throws(
     () => store.readIntent(identity),
     error => error.code === 'PROJECT_OPERATION_INTENT_CORRUPT'
   );
 });
 
-test('receipt reads tighten permissive files and reject hard-linked receipt evidence', async t => {
+test('receipt reads tighten permissive file permissions', async t => {
   if (process.platform === 'win32' || typeof process.getuid !== 'function') {
-    t.skip('POSIX file ownership and hard-link checks are required');
+    t.skip('POSIX file ownership and mode checks are required');
     return;
   }
   const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-receipt-file-policy-'));
@@ -958,9 +978,31 @@ test('receipt reads tighten permissive files and reject hard-linked receipt evid
   fsSync.chmodSync(receiptPath, 0o644);
   assert.equal(store.read(identity).result.status, 'verified');
   assert.equal(fsSync.statSync(receiptPath).mode & 0o077, 0);
+});
 
+test('receipt reads reject hard-linked receipt evidence', async t => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    t.skip('POSIX hard-link ownership checks are required');
+    return;
+  }
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-receipt-hardlink-'));
+  const directory = path.join(root, 'receipts');
+  fsSync.mkdirSync(directory, { mode: 0o700 });
+  t.after(() => fsSync.rmSync(root, { recursive: true, force: true }));
+  const store = new ProjectOperationReceiptStore({ directory });
+  const identity = {
+    operationId: 'receipt-hardlink-policy',
+    tenantId: 'tenant-a',
+    workspaceId: 'a'.repeat(64),
+    changeSetHash: 'b'.repeat(64)
+  };
+  store.write({
+    ...identity,
+    result: { status: 'verified', verification: { status: 'passed', failed: 0 } }
+  });
+  const receiptPath = store.receiptPath(identity.operationId, identity.tenantId);
   const hardLink = path.join(root, 'receipt-hardlink.json');
-  fsSync.linkSync(receiptPath, hardLink);
+  if (!createHardLinkOrSkip(t, fsSync, receiptPath, hardLink)) return;
   assert.throws(
     () => store.read(identity),
     error => error.code === 'PROJECT_OPERATION_RECEIPT_CORRUPT'

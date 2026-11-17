@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const OwnerIdentityService = require('../../src/core/security/owner-identity-service');
+const createHardLinkOrSkip = require('../../helpers/hard-link-capability');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-owner-identity-'));
@@ -423,7 +424,7 @@ test('owner identity state file permissions are tightened when an existing state
 });
 
 test('owner identity state rejects a hard-linked state file', t => {
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
     t.skip('POSIX hard-link count enforcement is not available');
     return;
   }
@@ -432,7 +433,8 @@ test('owner identity state rejects a hard-linked state file', t => {
     stateFile,
     bootstrapPassword: 'temporary-owner-password-9F!x'
   });
-  fs.linkSync(stateFile, path.join(directory, 'owner-state-hardlink.json'));
+  const hardLink = path.join(directory, 'owner-state-hardlink.json');
+  if (!createHardLinkOrSkip(t, fs, stateFile, hardLink)) return;
 
   assert.throws(
     () => new OwnerIdentityService({ stateFile }),
@@ -640,7 +642,8 @@ test('owner lockout key rejects hard-linked files before reading secret material
   const stateFile = path.join(root, 'owner.json');
   const keyFile = stateFile + '.lockout-key';
   fs.writeFileSync(keyFile, 'a'.repeat(64), { mode: 0o600 });
-  fs.linkSync(keyFile, path.join(root, 'external-key-link'));
+  const hardLink = path.join(root, 'external-key-link');
+  if (!createHardLinkOrSkip(t, fs, keyFile, hardLink)) return;
 
   assert.throws(
     () => new OwnerIdentityService({

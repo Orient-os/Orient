@@ -16,8 +16,8 @@ Before using the receipt directory, the store validates every path component fro
 
 - Every component must be a real directory, not a symbolic link, and its resolved path must equal its canonical path.
 - The receipt directory itself must be owned by the service UID and have no group/other permissions.
-- Every ancestor must be owned by root or the service UID. An owner can change permissions on its directory even when it is currently read-only, so an untrusted owner is not accepted.
-- An ancestor writable by group or other users is rejected unless the sticky bit is set **and** its owner is a trusted principal (root or the service UID). The sticky bit does not prevent the directory owner from replacing child entries.
+- Every ancestor must be owned by root or the service UID. On Android only, the exact platform ancestors `/data`, `/data/data`, and `/data/user/0` may additionally be owned by UID/GID 1000 (AID_SYSTEM), subject to the narrow group-write rule below. An owner can change permissions on its directory even when it is currently read-only, so an untrusted owner is not accepted.
+- An ancestor writable by group or other users is rejected unless the sticky bit is set **and** its owner is a trusted principal (root or the service UID), or it matches the narrowly scoped Android AID_SYSTEM exception: exact canonical path, UID/GID 1000, group-write set, other-write and sticky bits clear, and GID 1000 absent from the process primary and supplementary groups. The exception never applies on Linux/macOS or to arbitrary Android paths. The sticky bit does not prevent the directory owner from replacing child entries.
 - The full ancestor chain is checked; validating only the immediate parent is insufficient because a writable higher ancestor can replace that parent.
 
 If these properties cannot be established, receipt storage fails closed with `PROJECT_OPERATION_RECEIPT_PARENT_UNTRUSTED` or `PROJECT_OPERATION_RECEIPT_DIRECTORY_INVALID`. Do not weaken this to an immediate-parent-only check or an `lstat`-then-open fallback.
@@ -27,6 +27,12 @@ If these properties cannot be established, receipt storage fails closed with `PR
 Safe receipt and intent reads require Node.js `fs.constants.O_NOFOLLOW`. On standard Node.js Windows builds where this flag is unavailable, the store deliberately fails closed with `PROJECT_OPERATION_RECEIPT_UNSAFE_FILESYSTEM` or `PROJECT_OPERATION_INTENT_UNSAFE_FILESYSTEM`. Do not replace this with an `lstat`-then-open fallback.
 
 Windows receipt-backed project operations remain unsupported until a separate implementation can open reparse points safely and verify service-account ACLs. POSIX Linux, macOS, and Android/Termux builds use the no-follow descriptor path; the receipt directory must still satisfy the ownership and mode checks above.
+
+### Android/Termux ancestor exception evidence
+
+The Termux compatibility probe for Android 12 / API 31 reported Node `process.platform === 'android'`, process UID/GID `10259:10259`, and supplementary groups `1077, 3003, 9997, 20259, 50259, 10259` (no AID_SYSTEM GID 1000). The observed system ancestors `/data`, `/data/data`, and `/data/user/0` were owned by `1000:1000`, mode `0771`, and not writable by the Termux process. The Termux app directory was owned by `10259:10259`, mode `0700`.
+
+The runtime exception is intentionally based on the Android platform path/owner/group contract and the process group list; it does not treat `access(W_OK)` as a substitute for ancestor trust. Android SELinux labels/domain are part of the platform acceptance evidence, not a runtime dependency. If Android changes these path ownership or group contracts, the exception must fail closed until reviewed. The exact path allowlist must not be expanded to other Android users, shared storage, or arbitrary system directories.
 
 ## Operator procedure
 

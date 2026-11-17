@@ -160,3 +160,72 @@ test('rejects filesystem root as a storage directory', () => {
     error => error.code === 'PRIVATE_STORAGE_DIRECTORY_INVALID'
   );
 });
+
+
+test('allows only exact Android system-owned group-writable ancestors when the app is outside AID_SYSTEM', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
+  const stats = { uid: 1000n, gid: 1000n, mode: 0o40771n };
+  const identity = {
+    platform: 'android',
+    processGid: 10259,
+    supplementaryGroups: [1077, 3003, 9997, 20259, 50259, 10259]
+  };
+
+  for (const directory of ['/data', '/data/data', '/data/user/0']) {
+    assert.equal(predicate(directory, stats, identity), true, directory);
+  }
+});
+
+test('rejects Android system-ancestor exception for non-canonical or other-user paths', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
+  const stats = { uid: 1000n, gid: 1000n, mode: 0o40771n };
+  const identity = {
+    platform: 'android',
+    processGid: 10259,
+    supplementaryGroups: [10259]
+  };
+
+  for (const directory of ['/data/user', '/data/user/10', '/data/local/tmp', '/storage/emulated/0']) {
+    assert.equal(predicate(directory, stats, identity), false, directory);
+  }
+});
+
+test('rejects Android system-ancestor exception when AID_SYSTEM belongs to the process groups', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
+  const stats = { uid: 1000n, gid: 1000n, mode: 0o40771n };
+
+  assert.equal(predicate('/data', stats, {
+    platform: 'android',
+    processGid: 1000,
+    supplementaryGroups: []
+  }), false);
+  assert.equal(predicate('/data', stats, {
+    platform: 'android',
+    processGid: 10259,
+    supplementaryGroups: [1000]
+  }), false);
+});
+
+test('rejects Android system-ancestor exception for wrong owner, group, or unsafe mode', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
+  const identity = {
+    platform: 'android',
+    processGid: 10259,
+    supplementaryGroups: [10259]
+  };
+
+  assert.equal(predicate('/data', { uid: 0n, gid: 1000n, mode: 0o40771n }, identity), false);
+  assert.equal(predicate('/data', { uid: 1000n, gid: 10259n, mode: 0o40771n }, identity), false);
+  assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o40773n }, identity), false);
+  assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o41771n }, identity), false);
+  assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o40711n }, identity), false);
+});
+
+test('never applies the Android system-ancestor exception on non-Android platforms', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
+  assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o40771n }, {
+    platform: 'linux',
+    processGid: 10259,
+    supplementaryGroups: [10259]
+  }), false);
+});

@@ -9,6 +9,36 @@ function fail(message, code) {
   throw error;
 }
 
+const ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS = new Set([
+  '/data',
+  '/data/data',
+  '/data/user/0'
+]);
+
+function isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+  platform,
+  processGid,
+  supplementaryGroups
+}) {
+  if (platform !== 'android' ||
+      !ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS.has(candidate)) {
+    return false;
+  }
+
+  const processGroups = new Set([
+    BigInt(processGid),
+    ...supplementaryGroups.map(value => BigInt(value))
+  ]);
+  const mode = stats.mode & 0o7777n;
+
+  return stats.uid === 1000n &&
+    stats.gid === 1000n &&
+    (mode & 0o0020n) !== 0n &&
+    (mode & 0o0002n) === 0n &&
+    (mode & 0o1000n) === 0n &&
+    !processGroups.has(1000n);
+}
+
 function syncDirectory(directory) {
   let descriptor;
   try {
@@ -152,7 +182,12 @@ function ensurePrivateStorageDirectory(directory, {
       fail('Private storage ancestor is not owned by a trusted principal', codes.parentUntrusted);
     }
     const ancestorMode = stats.mode & 0o7777n;
-    if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n) {
+    if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n &&
+        !isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+          platform: process.platform,
+          processGid: process.getgid(),
+          supplementaryGroups: process.getgroups()
+        })) {
       fail('Private storage ancestor is writable by group or other users without sticky-bit protection', codes.parentUntrusted);
     }
   };
@@ -194,3 +229,5 @@ function ensurePrivateStorageDirectory(directory, {
 }
 
 module.exports = ensurePrivateStorageDirectory;
+
+module.exports.isTrustedAndroidSystemGroupAncestor = isTrustedAndroidSystemGroupAncestor;

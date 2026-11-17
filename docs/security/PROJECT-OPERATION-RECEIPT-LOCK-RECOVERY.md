@@ -34,6 +34,18 @@ The Termux compatibility probe for Android 12 / API 31 reported Node `process.pl
 
 The runtime exception is intentionally based on the Android platform path/owner/group contract and the process group list; it does not treat `access(W_OK)` as a substitute for ancestor trust. Android SELinux labels/domain are part of the platform acceptance evidence, not a runtime dependency. If Android changes these path ownership or group contracts, the exception must fail closed until reviewed. The exact path allowlist must not be expanded to other Android users, shared storage, or arbitrary system directories.
 
+### Android application-private `files` ancestor
+
+Android's application data layout may create the direct `files` directory with mode `0771`. ORIENT accepts this one ancestor only when all of the following are true:
+
+- Runtime platform is Android.
+- The canonical directory basename is exactly `files`, directly beneath an application data root at `/data/data/<package>` or `/data/user/0/<package>`.
+- The application root is a real directory owned by the running process UID/GID and has exactly mode `0700`.
+- The `files` directory is owned by that same process UID/GID and has exactly mode `0771`.
+- The process UID and primary GID are equal, matching the Android per-application identity convention.
+
+This is not a general allowance for group-writable directories. It does not apply to shared storage, cache subdirectories, arbitrary paths named `files`, Linux/macOS, mismatched identities, or broader modes. The ancestor chain is still validated component by component, including the system-owned parent above the application root. SELinux labels are useful platform diagnostics but are not treated as proof by themselves or used as a substitute for UID/GID and mode checks.
+
 ## Operator procedure
 
 1. **Stop every ORIENT process that can write to this receipt directory.** Do not attempt recovery while any instance is running. If the directory is on a shared or network filesystem, do not perform this procedure; treat the store as unsupported and escalate.

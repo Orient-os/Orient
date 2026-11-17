@@ -221,6 +221,72 @@ test('rejects Android system-ancestor exception for wrong owner, group, or unsaf
   assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o40711n }, identity), false);
 });
 
+test('allows only the app-private Android files directory with a private app root', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidAppFilesAncestor;
+  const candidate = '/data/user/0/com.termux/files';
+  const result = predicate(candidate, {
+    uid: 10259n, gid: 10259n, mode: 0o40771n
+  }, {
+    platform: 'android',
+    processUid: 10259,
+    processGid: 10259,
+    parentPath: '/data/user/0/com.termux',
+    parentStats: { uid: 10259n, gid: 10259n, mode: 0o40700n }
+  });
+  assert.equal(result, true);
+});
+
+test('rejects Android app-files exception outside the direct application data root', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidAppFilesAncestor;
+  const base = {
+    platform: 'android',
+    processUid: 10259,
+    processGid: 10259,
+    parentStats: { uid: 10259n, gid: 10259n, mode: 0o40700n }
+  };
+  const stats = { uid: 10259n, gid: 10259n, mode: 0o40771n };
+  assert.equal(predicate('/storage/emulated/0/files', stats, {
+    ...base, parentPath: '/storage/emulated/0'
+  }), false);
+  assert.equal(predicate('/data/user/0/com.termux/cache/files', stats, {
+    ...base, parentPath: '/data/user/0/com.termux/cache'
+  }), false);
+});
+
+test('rejects Android app-files exception for mismatched identity or broader permissions', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidAppFilesAncestor;
+  const candidate = '/data/user/0/com.termux/files';
+  const base = {
+    platform: 'android',
+    processUid: 10259,
+    processGid: 10259,
+    parentPath: '/data/user/0/com.termux',
+    parentStats: { uid: 10259n, gid: 10259n, mode: 0o40700n }
+  };
+  assert.equal(predicate(candidate, { uid: 10260n, gid: 10259n, mode: 0o40771n }, base), false);
+  assert.equal(predicate(candidate, { uid: 10259n, gid: 10260n, mode: 0o40771n }, base), false);
+  assert.equal(predicate(candidate, { uid: 10259n, gid: 10259n, mode: 0o40773n }, base), false);
+  assert.equal(predicate(candidate, { uid: 10259n, gid: 10259n, mode: 0o40771n }, {
+    ...base, parentStats: { uid: 10259n, gid: 10259n, mode: 0o40711n }
+  }), false);
+  assert.equal(predicate(candidate, { uid: 10259n, gid: 10259n, mode: 0o40771n }, {
+    ...base, processGid: 1000
+  }), false);
+});
+
+test('never applies the Android app-files exception on non-Android platforms', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidAppFilesAncestor;
+  assert.equal(predicate('/data/user/0/com.termux/files', {
+    uid: 10259n, gid: 10259n, mode: 0o40771n
+  }, {
+    platform: 'linux',
+    processUid: 10259,
+    processGid: 10259,
+    parentPath: '/data/user/0/com.termux',
+    parentStats: { uid: 10259n, gid: 10259n, mode: 0o40700n }
+  }), false);
+});
+
 test('never applies the Android system-ancestor exception on non-Android platforms', () => {
   const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemGroupAncestor;
   assert.equal(predicate('/data', { uid: 1000n, gid: 1000n, mode: 0o40771n }, {

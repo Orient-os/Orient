@@ -39,6 +39,40 @@ function isTrustedAndroidSystemGroupAncestor(candidate, stats, {
     !processGroups.has(1000n);
 }
 
+function isTrustedAndroidAppFilesAncestor(candidate, stats, {
+  platform,
+  processUid,
+  processGid,
+  parentPath,
+  parentStats
+}) {
+  if (platform !== 'android' ||
+      typeof parentPath !== 'string' ||
+      !parentStats ||
+      path.basename(candidate) !== 'files' ||
+      path.dirname(candidate) !== parentPath ||
+      !['/data/data', '/data/user/0'].includes(path.dirname(parentPath))) {
+    return false;
+  }
+
+  const uid = BigInt(processUid);
+  const gid = BigInt(processGid);
+  const mode = stats.mode & 0o7777n;
+  const parentMode = parentStats.mode & 0o7777n;
+  const parentType = parentStats.mode & 0o170000n;
+
+  // Android assigns each application a private UID/GID. The app data root
+  // must be private (0700); only its direct "files" child may use 0771.
+  return uid === gid &&
+    stats.uid === uid &&
+    stats.gid === gid &&
+    mode === 0o0771n &&
+    parentType === 0o040000n &&
+    parentStats.uid === uid &&
+    parentStats.gid === gid &&
+    parentMode === 0o0700n;
+}
+
 function syncDirectory(directory) {
   let descriptor;
   try {
@@ -182,13 +216,30 @@ function ensurePrivateStorageDirectory(directory, {
       fail('Private storage ancestor is not owned by a trusted principal', codes.parentUntrusted);
     }
     const ancestorMode = stats.mode & 0o7777n;
-    if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n &&
-        !isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+    if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n) {
+      const systemAncestorTrusted = isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+        platform: process.platform,
+        processGid: process.getgid(),
+        supplementaryGroups: process.getgroups()
+      });
+      let appFilesAncestorTrusted = false;
+      if (process.platform === 'android' &&
+          path.basename(candidate) === 'files' &&
+          typeof process.getuid === 'function' &&
+          typeof process.getgid === 'function') {
+        const parentPath = path.dirname(candidate);
+        const parentStats = fs.lstatSync(parentPath, { bigint: true });
+        appFilesAncestorTrusted = isTrustedAndroidAppFilesAncestor(candidate, stats, {
           platform: process.platform,
+          processUid: process.getuid(),
           processGid: process.getgid(),
-          supplementaryGroups: process.getgroups()
-        })) {
-      fail('Private storage ancestor is writable by group or other users without sticky-bit protection', codes.parentUntrusted);
+          parentPath,
+          parentStats
+        });
+      }
+      if (!systemAncestorTrusted && !appFilesAncestorTrusted) {
+        fail('Private storage ancestor is writable by group or other users without sticky-bit protection', codes.parentUntrusted);
+      }
     }
   };
 
@@ -231,3 +282,4 @@ function ensurePrivateStorageDirectory(directory, {
 module.exports = ensurePrivateStorageDirectory;
 
 module.exports.isTrustedAndroidSystemGroupAncestor = isTrustedAndroidSystemGroupAncestor;
+module.exports.isTrustedAndroidAppFilesAncestor = isTrustedAndroidAppFilesAncestor;

@@ -1,16 +1,18 @@
 'use strict';
 
 class AgentExecutionCoordinator {
-  constructor({ agentOrchestrator, agentLoop, checkpoint, maxReplans = 3, validateReplannedPlan }) {
+  constructor({ agentOrchestrator, agentLoop, checkpoint, planExecutionGate, maxReplans = 3, validateReplannedPlan }) {
     if (!agentOrchestrator) throw new TypeError('agentOrchestrator is required');
     if (!agentLoop) throw new TypeError('agentLoop is required');
     if (typeof checkpoint !== 'function') throw new TypeError('checkpoint is required');
     if (typeof validateReplannedPlan !== 'function') throw new TypeError('validateReplannedPlan is required');
+    if (!planExecutionGate || typeof planExecutionGate.verify !== 'function') throw new TypeError('planExecutionGate is required');
     this.agentOrchestrator = agentOrchestrator;
     this.agentLoop = agentLoop;
     this.checkpoint = checkpoint;
     this.maxReplans = maxReplans;
     this.validateReplannedPlan = validateReplannedPlan;
+    this.planExecutionGate = planExecutionGate;
   }
 
   async run({ context, plan, validation, planRevision = 1, replans = 0, previousFingerprint, approval = null, approvals = {}, requestId = context.requestId, input = context.input, tenantId, agentId = null, resumed = false, isCancellationRequested = null, cancellationReason = null, renewResumeLease = null, persistencePrincipal = null }) {
@@ -51,6 +53,35 @@ class AgentExecutionCoordinator {
         });
       }
 
+      let gateResult;
+      try {
+        gateResult = this.planExecutionGate.verify({
+          plan: currentPlan,
+          validation: currentValidation,
+          executionId: context.executionId,
+          tenantId: context.tenantId || tenantId,
+          userId: context.userId,
+          workspaceId: context.workspaceId,
+          agentId: currentPlan.agentId || agentId || 'ORIENT_RUNTIME',
+          planRevision: currentRevision
+        });
+      } catch (error) {
+        context.record('plan.execution_gate.rejected', {
+          planRevision: currentRevision,
+          resumed,
+          code: error?.code || 'PLAN_GATE_REJECTED'
+        });
+        await this.checkpoint(context, 'update', 'plan_execution_gate_rejected:plan-' + currentRevision, persistencePrincipal);
+        throw error;
+      }
+
+      currentPlan = gateResult.plan;
+      currentValidation = gateResult.validation;
+      context.record('plan.execution_gate.approved', {
+        ...gateResult.receipt
+      });
+      // Persist the exact plan digest and verifier receipt before any tool can run.
+      await this.checkpoint(context, 'update', 'plan_execution_gate_approved:plan-' + currentRevision, persistencePrincipal);
       context.setPlan(currentPlan);
       const lifecycle = context.getAgentLifecycle && context.getAgentLifecycle();
       if (lifecycle !== 'executing') context.transitionAgentTo('executing');
@@ -62,6 +93,8 @@ class AgentExecutionCoordinator {
           input,
           plan: currentPlan,
           planRevision: currentRevision,
+          planSha256: gateResult.receipt.planSha256,
+          planGateReceiptSha256: gateResult.receipt.receiptSha256,
           approval,
           approvals,
           tenantId,

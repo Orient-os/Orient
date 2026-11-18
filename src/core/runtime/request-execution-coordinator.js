@@ -316,6 +316,12 @@ class RequestExecutionCoordinator {
         const planRevision = Number(approvalContext.planRevision || 1);
         const tool = typeof approvalContext.tool === 'string' ? approvalContext.tool : null;
         const capability = typeof approvalContext.capability === 'string' ? approvalContext.capability : null;
+        const planSha256 = typeof approvalContext.planSha256 === 'string' && /^[a-f0-9]{64}$/.test(approvalContext.planSha256)
+          ? approvalContext.planSha256
+          : null;
+        if (!planSha256) {
+          throw new AppError('Approval cannot be issued without the independently verified plan digest', 409, 'APPROVAL_PLAN_DIGEST_REQUIRED');
+        }
         const tenantId = approvalContext.tenantId || context.tenantId || this.tenantId;
         const agentId = approvalContext.agentId || context.metadata?.agentId || context.plan?.agentId || 'ORIENT_RUNTIME';
         const operationId = approvalContext.operationId || null;
@@ -348,7 +354,7 @@ class RequestExecutionCoordinator {
               tool,
               capability,
               planRevision,
-              scope: { planRevision },
+              scope: { planRevision, planSha256 },
               tenantId,
               agentId,
               operationId,

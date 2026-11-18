@@ -93,6 +93,8 @@ class AgentExecutionCoordinator {
           input,
           plan: currentPlan,
           planRevision: currentRevision,
+          planSha256: gateResult.receipt.planSha256,
+          planGateReceiptSha256: gateResult.receipt.receiptSha256,
           approval,
           approvals,
           tenantId,

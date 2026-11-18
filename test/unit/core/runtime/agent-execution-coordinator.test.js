@@ -113,3 +113,77 @@ test('re-verifies each changed plan revision before its execution', async () => 
   assert.equal(executed, 2);
   assert.equal(decisions, 2);
 });
+
+test('persists the independent gate receipt before the execution loop starts', async () => {
+  const context = contextStub();
+  const order = [];
+  context.record = (type, data) => order.push({ type, data });
+  const plan = { intent: 'checkpoint-order', steps: [{ tool: 'noop' }] };
+  const coordinator = new AgentExecutionCoordinator({
+    agentOrchestrator: {
+      decideReplanning() {
+        return { nextAction: 'complete', toJSON: () => ({ nextAction: 'complete' }) };
+      }
+    },
+    agentLoop: {
+      async run() {
+        order.push({ type: 'agent-loop.started' });
+        return { stepsExecuted: 1, evaluation: {}, result: { ok: true } };
+      }
+    },
+    checkpoint: async (_context, mode, reason) => {
+      order.push({ type: 'checkpoint', mode, reason });
+    },
+    planExecutionGate: gate,
+    validateReplannedPlan: () => ({ valid: true, fingerprint: 'next' })
+  });
+
+  await coordinator.run({
+    context,
+    plan,
+    validation: validated(plan),
+    previousFingerprint: 'initial',
+    tenantId: 'tenant-1'
+  });
+
+  const approvalIndex = order.findIndex(item => item.type === 'plan.execution_gate.approved');
+  const checkpointIndex = order.findIndex(item => item.type === 'checkpoint' &&
+    item.reason.startsWith('plan_execution_gate_approved'));
+  const loopIndex = order.findIndex(item => item.type === 'agent-loop.started');
+  assert.ok(approvalIndex >= 0);
+  assert.ok(checkpointIndex > approvalIndex);
+  assert.ok(loopIndex > checkpointIndex);
+  assert.match(order[approvalIndex].data.planSha256, /^[a-f0-9]{64}$/);
+});
+
+test('checkpoint failure after gate approval prevents all tool execution', async () => {
+  const context = contextStub();
+  const plan = { intent: 'checkpoint-failure', steps: [{ tool: 'noop' }] };
+  let loopCalls = 0;
+  const coordinator = new AgentExecutionCoordinator({
+    agentOrchestrator: {},
+    agentLoop: {
+      async run() {
+        loopCalls += 1;
+        return { stepsExecuted: 1, evaluation: {}, result: null };
+      }
+    },
+    checkpoint: async () => {
+      throw Object.assign(new Error('durable store unavailable'), { code: 'CHECKPOINT_WRITE_FAILED' });
+    },
+    planExecutionGate: gate,
+    validateReplannedPlan: () => ({ valid: true, fingerprint: 'next' })
+  });
+
+  await assert.rejects(
+    () => coordinator.run({
+      context,
+      plan,
+      validation: validated(plan),
+      previousFingerprint: 'initial',
+      tenantId: 'tenant-1'
+    }),
+    error => error.code === 'CHECKPOINT_WRITE_FAILED'
+  );
+  assert.equal(loopCalls, 0);
+});

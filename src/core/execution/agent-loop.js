@@ -447,7 +447,7 @@ class AgentLoop {
                 agentId: agentAuthorization?.agentId || runtimeContext.agentId || plan.agentId || 'ORIENT_RUNTIME',
                 tenantId: runtimeContext.tenantId || context.tenantId,
                 operationId,
-                scope: { planRevision },
+                scope: { planRevision, planSha256: runtimeContext.planSha256 },
                 persistencePrincipal: runtimeContext.persistencePrincipal
               });
 
@@ -484,6 +484,7 @@ class AgentLoop {
               executionId: context.executionId,
               step: stepNumber,
               planRevision,
+              planSha256: runtimeContext.planSha256 || null,
               operationId,
               tool: step.tool,
               capability: error.capability || agentAuthorization?.capability || null,

@@ -599,6 +599,7 @@ test('approval is rejected when the plan digest changes without changing executi
     step: 1,
     tool: 'danger.write',
     capability: 'external.write',
+    planRevision: 4,
     tenantId: 'tenant-plan-binding',
     scope: { planRevision: 4, planSha256 },
     ttlMs: 60000

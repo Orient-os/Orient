@@ -718,3 +718,56 @@ test('durable concurrent approve/reject decisions have one persisted winner', as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('durable approval decision race remains single-winner under 32 concurrent contenders', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const ApprovalRepository = require('../../../../src/infrastructure/persistence/json/approval.repository');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-approval-stress-'));
+  try {
+    const repository = new ApprovalRepository(path.join(dir, 'approvals.json'));
+    const service = new ApprovalService({
+      repository,
+      tenantId: 'tenant-stress',
+      clock: () => 1000,
+      decisionAuthorizer: async () => true
+    });
+    const approval = await service.issue({
+      executionId: 'exec-stress',
+      step: 1,
+      tool: 'danger.write',
+      capability: 'external.write',
+      tenantId: 'tenant-stress',
+      ttlMs: 60000
+    });
+
+    const contenders = Array.from({ length: 32 }, (_, index) => ({
+      decision: index % 2 === 0 ? 'approved' : 'rejected',
+      actorId: 'owner-' + index
+    }));
+    const outcomes = await Promise.allSettled(contenders.map(contender => service.decide({
+      approvalId: approval.approvalId,
+      executionId: 'exec-stress',
+      tenantId: 'tenant-stress',
+      ...contender
+    })));
+
+    assert.equal(outcomes.filter(item => item.status === 'fulfilled').length, 1);
+    assert.equal(outcomes.filter(item => item.status === 'rejected' &&
+      item.reason?.code === 'APPROVAL_DECISION_CONFLICT').length, 31);
+
+    const persisted = await repository.findById(approval.approvalId, { tenantId: 'tenant-stress' });
+    assert.ok(['approved', 'rejected'].includes(persisted.decision?.status));
+    const winningReplay = await service.decide({
+      approvalId: approval.approvalId,
+      executionId: 'exec-stress',
+      tenantId: 'tenant-stress',
+      decision: persisted.decision.status,
+      actorId: persisted.decision.actorId
+    });
+    assert.equal(winningReplay.idempotent, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

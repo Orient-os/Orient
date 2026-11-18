@@ -3,6 +3,9 @@ const version = require('../version');
 const AgentLoop =
   require('../execution/agent-loop');
 
+const PlanValidator = require('../planning/validation/plan-validator');
+const IndependentPlanExecutionGate = require('../execution/independent-plan-execution-gate');
+
 const AgentRegistry =
   require('../agent/boundary/agent-registry');
 const { AgentDefinition } =
@@ -181,10 +184,20 @@ class OrientRuntime {
         capabilityGovernance
       });
 
+    // Use a separately instantiated deterministic verifier: planner-supplied
+    // validation is evidence to compare, never the authority to start execution.
+    this.planExecutionGate = new IndependentPlanExecutionGate({
+      verifier: new PlanValidator({
+        maxSteps: this.agentLoop.maxSteps,
+        toolRegistry: this.toolRegistry
+      })
+    });
+
     this.agentExecutionCoordinator = new AgentExecutionCoordinator({
       agentOrchestrator: this.agentOrchestrator,
       agentLoop: this.agentLoop,
       checkpoint: (context, mode, reason, persistencePrincipal) => this.checkpoint(context, mode, reason, persistencePrincipal),
+      planExecutionGate: this.planExecutionGate,
       validateReplannedPlan: (nextPlan, previousFingerprint) => this.validateReplannedPlan(nextPlan, previousFingerprint)
     });
 

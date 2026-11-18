@@ -84,3 +84,21 @@ test('rejects malformed and non-canonical plan values instead of signing them', 
   input.validation = new PlanValidator().validate({ intent: 'test', steps: [{ tool: 'noop' }] });
   assert.throws(() => createGate().verify(input), /accessors|canonical/i);
 });
+
+test('receipt integrity check detects tampering with the plan digest and decision', () => {
+  const result = createGate().verify(request());
+  const tampered = { ...result.receipt, planSha256: 'f'.repeat(64) };
+  const { receiptSha256, ...body } = tampered;
+  const recomputed = crypto.createHash('sha256').update(canonicalJson(body)).digest('hex');
+  assert.notEqual(recomputed, receiptSha256);
+  assert.equal(result.receipt.decision, 'allow');
+  assert.notEqual(tampered.planSha256, result.receipt.planSha256);
+});
+
+test('plan digest changes when a non-step plan field changes', () => {
+  const first = request({ intent: 'first', metadata: { policy: 'strict' }, steps: [{ tool: 'noop' }] });
+  const second = request({ intent: 'first', metadata: { policy: 'relaxed' }, steps: [{ tool: 'noop' }] });
+  const firstDigest = createGate().verify(first).receipt.planSha256;
+  const secondDigest = createGate().verify(second).receipt.planSha256;
+  assert.notEqual(firstDigest, secondDigest);
+});

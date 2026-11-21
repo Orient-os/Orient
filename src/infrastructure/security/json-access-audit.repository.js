@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 
 function hashEvent(previousHash, event) {
   return createHash('sha256')
@@ -109,12 +110,12 @@ class JsonAccessAuditRepository {
 
   async initialize() {
     if (this.initialized) return;
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-    try {
-      await fs.chmod(path.dirname(this.filePath), 0o700);
-    } catch (_) {
-      // Some filesystems do not support POSIX modes; deployment permissions still require review.
-    }
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), {
+      mode: 0o700,
+      repairPermissions: true,
+      errorPrefix: 'ACCESS_AUDIT_STORAGE'
+    });
+    this.filePath = path.join(directory, path.basename(this.filePath));
 
     const verified = await this.readVerifiedRecords();
     this.previousHash = verified.lastHash;

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { validateAcknowledgement, prepareAcknowledgement } = require('../workflow-outbox-utils');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 class WorkflowRepository {
   ensureStorage() {
@@ -33,8 +34,9 @@ class WorkflowRepository {
     }
     this.lockTimeoutMs = lockTimeoutMs;
     this.filePath = path.resolve(filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'WORKFLOW_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     this.ensureStorage();
   }
 

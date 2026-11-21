@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 class IdempotencyRepository {
   constructor(filePath, { lockTimeoutMs = 30000 } = {}) {
@@ -15,8 +16,10 @@ class IdempotencyRepository {
   }
 
   ensureStorage() {
-    const directory = path.dirname(this.filePath);
-    fs.mkdirSync(directory, { recursive: true });
+    this.filePath = path.resolve(this.filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'IDEMPOTENCY_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
+    this.lockPath = this.filePath + '.lock';
     try {
       const fd = fs.openSync(this.filePath, 'wx', 0o600);
       try {

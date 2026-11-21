@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 const MAX_EVENT_FILE_BYTES = 64 * 1024 * 1024;
 
@@ -32,41 +33,32 @@ class EventRepository {
   }
 
   ensureStorage() {
-    if (typeof fs.constants.O_NOFOLLOW !== 'number') fail('Safe JSON event storage is unsupported on this platform', 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    // Reject a symlink at the configured directory itself before resolving
-    // platform aliases in its ancestors (notably Android /data/data).
-    const configuredDirectoryStats = fs.lstatSync(this.directory, { bigint: true });
-    if (!configuredDirectoryStats.isDirectory() || configuredDirectoryStats.isSymbolicLink()) {
-      fail('JSON event storage directory must not be a symbolic link', 'EVENT_STORAGE_DIRECTORY_INVALID');
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+      fail('Safe JSON event storage is unsupported on this platform', 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
     }
-    // Normalize trusted platform aliases once before deriving file/lock paths.
-    this.directory = fs.realpathSync(this.directory);
+
+    // Validate every canonical ancestor before creating or opening any storage
+    // descendant. Checking only the immediate parent permits an attacker-
+    // writable grandparent to replace the supposedly private storage tree.
+    this.directory = ensurePrivateStorageDirectory(this.directory, {
+      mode: 0o700,
+      repairPermissions: true,
+      errorPrefix: 'EVENT_STORAGE'
+    });
     this.filePath = path.join(this.directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
-    const directoryStats = fs.lstatSync(this.directory, { bigint: true });
-    const parentDirectory = path.dirname(this.directory);
-    const parentStats = fs.lstatSync(parentDirectory, { bigint: true });
-    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() ||
-        !parentStats.isDirectory() || parentStats.isSymbolicLink() ||
-        fs.realpathSync(this.directory) !== this.directory ||
-        fs.realpathSync(parentDirectory) !== parentDirectory) {
-      fail('JSON event storage directory must be a real canonical directory', 'EVENT_STORAGE_DIRECTORY_INVALID');
-    }
-    if (process.platform !== 'win32' && typeof process.getuid === 'function') {
-      if (directoryStats.uid !== BigInt(process.getuid())) fail('JSON event storage directory must be owned by the application user', 'EVENT_STORAGE_DIRECTORY_OWNER_INVALID');
-      const parentMode = parentStats.mode & 0o7777n;
-      if ((parentMode & 0o022n) !== 0n && (parentMode & 0o1000n) === 0n) fail('JSON event storage parent is writable by other users without sticky-bit protection', 'EVENT_STORAGE_PARENT_UNTRUSTED');
-      // Tighten an existing service-owned directory instead of breaking a
-      // local JSON setup created earlier with a permissive umask.
-      if ((directoryStats.mode & 0o077n) !== 0n) fs.chmodSync(this.directory, 0o700);
-      const privateStats = fs.lstatSync(this.directory, { bigint: true });
-      if ((privateStats.mode & 0o077n) !== 0n) fail('JSON event storage directory must be private (mode 0700)', 'EVENT_STORAGE_DIRECTORY_PERMISSIONS_INVALID');
-    }
+
     try {
       const fd = fs.openSync(this.filePath, 'wx', 0o600);
-      try { fs.writeFileSync(fd, '[]\n', 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      try {
+        fs.writeFileSync(fd, '[]\\n', 'utf8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
   }
 
   read() {

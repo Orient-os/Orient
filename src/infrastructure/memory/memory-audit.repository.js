@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 
 const LOCK_RETRY_MS = 10;
 const LOCK_TIMEOUT_MS = 10000;
@@ -17,7 +18,9 @@ class MemoryAuditRepository {
   }
 
   ensureStorage() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    this.filePath = path.resolve(this.filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'MEMORY_AUDIT_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
     try {
       // Exclusive creation prevents concurrent first-time writers from
       // truncating the log before either writer acquires the append lock.

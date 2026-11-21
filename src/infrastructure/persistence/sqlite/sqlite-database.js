@@ -3,15 +3,22 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 class SqliteDatabase {
   constructor(filePath) {
     if (typeof filePath !== 'string' || !filePath) throw new TypeError('filePath is required');
     this.filePath = filePath === ':memory:' ? ':memory:' : path.resolve(filePath);
     if (this.filePath !== ':memory:') {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), {
+        mode: 0o700, repairPermissions: true, errorPrefix: 'SQLITE_STORAGE'
+      });
+      this.filePath = path.join(directory, path.basename(this.filePath));
     }
     this.connection = new DatabaseSync(this.filePath);
+    if (this.filePath !== ':memory:' && process.platform !== 'win32') {
+      fs.chmodSync(this.filePath, 0o600);
+    }
     this.connection.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
     this.initialize();
   }

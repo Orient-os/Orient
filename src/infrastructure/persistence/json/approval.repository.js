@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 function matchesTenant(record, tenantId) {
   const primaryTenantId = record?.tenantId;
@@ -25,7 +26,10 @@ class ApprovalRepository {
   }
 
   ensureStorage() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    this.filePath = path.resolve(this.filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'APPROVAL_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
+    this.lockPath = this.filePath + '.lock';
     if (!fs.existsSync(this.filePath)) fs.writeFileSync(this.filePath, '{}\n', 'utf8');
   }
 

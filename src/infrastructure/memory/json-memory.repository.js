@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { normalizeMemory } = require('../../domain/memory/memory.entity');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 
 class JsonMemoryRepository {
   constructor(filePath, { lockTimeoutMs = 30000 } = {}) {
@@ -17,8 +18,10 @@ class JsonMemoryRepository {
   }
 
   ensureStorage() {
-    const directory = path.dirname(this.filePath);
-    fs.mkdirSync(directory, { recursive: true });
+    this.filePath = path.resolve(this.filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'MEMORY_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
+    this.lockPath = this.filePath + '.lock';
 
     // Serialize first-time initialization with an atomic directory lock. Unlike
     // hard links, mkdir is supported by Android app-private filesystems.

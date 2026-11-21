@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 class ExecutionRepository {
   constructor(filePath, { lockTimeoutMs = 30_000 } = {}) {
@@ -18,9 +19,10 @@ class ExecutionRepository {
   }
 
   ensureStorage() {
-    const directory = path.dirname(this.filePath);
-
-    fs.mkdirSync(directory, { recursive: true });
+    this.filePath = path.resolve(this.filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'EXECUTION_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
+    this.lockPath = this.filePath + '.lock';
 
     if (!fs.existsSync(this.filePath)) {
       fs.writeFileSync(this.filePath, '[]\n', 'utf8');

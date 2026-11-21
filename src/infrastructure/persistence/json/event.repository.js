@@ -51,7 +51,7 @@ class EventRepository {
     try {
       const fd = fs.openSync(this.filePath, 'wx', 0o600);
       try {
-        fs.writeFileSync(fd, '[]\\n', 'utf8');
+        fs.writeFileSync(fd, '[]\n', 'utf8');
         fs.fsyncSync(fd);
       } finally {
         fs.closeSync(fd);

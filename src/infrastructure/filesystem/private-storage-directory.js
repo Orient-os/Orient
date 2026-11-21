@@ -138,7 +138,7 @@ function ensurePrivateStorageDirectory(directory, {
     if (!target.isDirectory() || target.isSymbolicLink() || (posix && target.uid !== serviceUid)) {
       fail(errorPrefix + '_DIRECTORY_OWNER_INVALID', 'Storage directory must be owned by the application user');
     }
-    if ((target.mode & 0o7777n) !== BigInt(mode)) {
+    if (posix && (target.mode & 0o7777n) !== BigInt(mode)) {
       if (!repairPermissions) {
         fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions are not private');
       }
@@ -153,8 +153,13 @@ function ensurePrivateStorageDirectory(directory, {
 
   for (let index = 0; index < missing.length; index += 1) {
     const next = path.join(current, missing[index]);
-    try { fs.mkdirSync(next, { mode }); }
-    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    let created = false;
+    try {
+      fs.mkdirSync(next, { mode });
+      created = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
 
     const stats = fs.lstatSync(next, { bigint: true });
     if (!stats.isDirectory() || stats.isSymbolicLink() || fs.realpathSync(next) !== next) {
@@ -163,10 +168,13 @@ function ensurePrivateStorageDirectory(directory, {
     if (posix && stats.uid !== serviceUid) {
       fail(errorPrefix + '_DIRECTORY_OWNER_INVALID', 'Created storage directory has an unexpected owner');
     }
-    if (index === missing.length - 1 && posix && (stats.mode & 0o7777n) !== BigInt(mode)) {
-      if (!repairPermissions) fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions are not private');
+    if (posix && (stats.mode & 0o7777n) !== BigInt(mode)) {
+      if (!created && !repairPermissions) {
+        fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions are not private');
+      }
       fs.chmodSync(next, mode);
-      if ((fs.lstatSync(next, { bigint: true }).mode & 0o7777n) !== BigInt(mode)) {
+      const secured = fs.lstatSync(next, { bigint: true });
+      if (secured.uid !== serviceUid || (secured.mode & 0o7777n) !== BigInt(mode)) {
         fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions could not be secured');
       }
     }

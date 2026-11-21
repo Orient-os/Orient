@@ -55,6 +55,6 @@ test('creates every missing storage ancestor privately and initializes valid JSO
     assert.equal(stats.mode & 0o777, 0o700);
   }
 
-  assert.equal(fs.readFileSync(repository.filePath, 'utf8'), '[]\\n');
+  assert.equal(fs.readFileSync(repository.filePath, 'utf8'), '[]\n');
   assert.deepEqual(repository.read(), []);
 });

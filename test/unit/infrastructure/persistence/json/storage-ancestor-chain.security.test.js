@@ -19,6 +19,8 @@ const JsonAccessAuditRepository = require('../../../../../src/infrastructure/sec
 const OwnerChatConversationStore = require('../../../../../src/infrastructure/persistence/owner-chat-conversation-store');
 const OwnerWorkProfileStore = require('../../../../../src/infrastructure/persistence/owner-work-profile-store');
 const OwnerIdentityService = require('../../../../../src/core/security/owner-identity-service');
+const MemoryTransactionCoordinator = require('../../../../../src/infrastructure/memory/memory-transaction-coordinator');
+const SqliteDatabase = require('../../../../../src/infrastructure/persistence/sqlite/sqlite-database');
 
 const storageFactories = [
   ['approval', file => new ApprovalRepository(file)],
@@ -33,7 +35,9 @@ const storageFactories = [
   ['access audit', async file => new JsonAccessAuditRepository(file).initialize()],
   ['owner chat', async file => new OwnerChatConversationStore({ filePath: file }).writeRecord({ version: 1, messages: [] })],
   ['owner profile', async file => new OwnerWorkProfileStore({ filePath: file }).update({ displayName: 'Owner' })],
-  ['owner identity', file => new OwnerIdentityService({ stateFile: file, bootstrapPassword: 'SecureBootstrapPassword123!' })]
+  ['owner identity', file => new OwnerIdentityService({ stateFile: file, bootstrapPassword: 'SecureBootstrapPassword123!' })],
+  ['memory transaction journal', file => new MemoryTransactionCoordinator({ memoryFile: file, auditFile: file + '.audit', journalFile: file + '.journal' })],
+  ['SQLite database', file => new SqliteDatabase(file)]
 ];
 
 for (const [name, initialize] of storageFactories) {

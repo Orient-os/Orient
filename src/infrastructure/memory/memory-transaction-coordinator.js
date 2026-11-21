@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 
 function syncDirectory(directory) {
   let fd;
@@ -16,8 +17,10 @@ function syncDirectory(directory) {
 }
 
 function atomicWrite(filePath, content) {
-  const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
+  const directory = ensurePrivateStorageDirectory(path.dirname(filePath), {
+    mode: 0o700, repairPermissions: true, errorPrefix: 'MEMORY_TRANSACTION_STORAGE'
+  });
+  filePath = path.join(directory, path.basename(filePath));
   const temporary = `${filePath}.txn.${process.pid}.${crypto.randomUUID()}`;
   let fd;
   try {
@@ -49,11 +52,20 @@ class MemoryTransactionCoordinator {
     if (!memoryFile || !auditFile || !journalFile) {
       throw new TypeError('memoryFile, auditFile and journalFile are required');
     }
-    this.files = [path.resolve(memoryFile), path.resolve(auditFile)];
-    this.journalFile = path.resolve(journalFile);
+    this.files = [memoryFile, auditFile].map(file => {
+      const absolute = path.resolve(file);
+      const directory = ensurePrivateStorageDirectory(path.dirname(absolute), {
+        mode: 0o700, repairPermissions: true, errorPrefix: 'MEMORY_TRANSACTION_STORAGE'
+      });
+      return path.join(directory, path.basename(absolute));
+    });
+    const absoluteJournal = path.resolve(journalFile);
+    const journalDirectory = ensurePrivateStorageDirectory(path.dirname(absoluteJournal), {
+      mode: 0o700, repairPermissions: true, errorPrefix: 'MEMORY_TRANSACTION_STORAGE'
+    });
+    this.journalFile = path.join(journalDirectory, path.basename(absoluteJournal));
     this.lockFile = `${this.journalFile}.lock`;
     this.lockTimeoutMs = lockTimeoutMs;
-    fs.mkdirSync(path.dirname(this.journalFile), { recursive: true });
   }
 
   readJournal() {

@@ -135,7 +135,7 @@ function ensurePrivateStorageDirectory(directory, {
 
   if (missing.length === 0) {
     const target = fs.lstatSync(existing, { bigint: true });
-    if (!target.isDirectory() || target.isSymbolicLink() || target.uid !== serviceUid) {
+    if (!target.isDirectory() || target.isSymbolicLink() || (posix && target.uid !== serviceUid)) {
       fail(errorPrefix + '_DIRECTORY_OWNER_INVALID', 'Storage directory must be owned by the application user');
     }
     if ((target.mode & 0o7777n) !== BigInt(mode)) {

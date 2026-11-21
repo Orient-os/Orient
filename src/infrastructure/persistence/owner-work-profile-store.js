@@ -2,6 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 const { randomUUID } = require('node:crypto');
 
 const DEFAULT_PROFILE = Object.freeze({
@@ -74,8 +75,8 @@ class OwnerWorkProfileStore {
       const current = await this.get();
       const normalized = normalizeProfile(input, current);
       const next = { ...normalized, updatedAt: new Date().toISOString() };
-      const directory = path.dirname(this.filePath);
-      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+      const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'OWNER_PROFILE_STORAGE' });
+      this.filePath = path.join(directory, path.basename(this.filePath));
       const temporaryPath = this.filePath + '.' + randomUUID() + '.tmp';
       try {
         await fs.writeFile(temporaryPath, JSON.stringify(next) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });

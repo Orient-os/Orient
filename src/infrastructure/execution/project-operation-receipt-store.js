@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const os = require('node:os');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 
 function fail(message, code) {
   const error = new Error(message);
@@ -55,12 +56,11 @@ class ProjectOperationReceiptStore {
   }
 
   ensureDirectory() {
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const stats = fs.lstatSync(this.directory);
-    if (!stats.isDirectory() || stats.isSymbolicLink() ||
-        fs.realpathSync(this.directory) !== this.directory) {
-      fail('Operation receipt directory is not a real, canonical directory', 'PROJECT_OPERATION_RECEIPT_DIRECTORY_INVALID');
-    }
+    this.directory = ensurePrivateStorageDirectory(this.directory, {
+      mode: 0o700,
+      repairPermissions: true,
+      errorPrefix: 'PROJECT_OPERATION_RECEIPT'
+    });
   }
 
   intentPath(operationId, tenantId) {

@@ -2,6 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
 const { randomUUID } = require('node:crypto');
 
 const MAX_MESSAGES = 500;
@@ -167,8 +168,8 @@ class OwnerChatConversationStore {
   }
 
   async writeRecord(record) {
-    const directory = path.dirname(this.filePath);
-    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'OWNER_CHAT_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
     const temporaryPath = this.filePath + '.' + randomUUID() + '.tmp';
     try {
       await fs.writeFile(temporaryPath, JSON.stringify(record) + '\n', {

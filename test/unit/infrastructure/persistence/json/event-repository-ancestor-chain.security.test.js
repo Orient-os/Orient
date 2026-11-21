@@ -31,3 +31,30 @@ test('rejects an untrusted writable grandparent before creating event storage', 
   );
   assert.equal(fs.existsSync(storage), false, 'storage must not be created below an untrusted ancestor');
 });
+
+test('creates every missing storage ancestor privately and initializes valid JSON', t => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    t.skip('POSIX ownership and mode checks are not available');
+    return;
+  }
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-event-private-chain-'));
+  fs.chmodSync(root, 0o700);
+  t.after(() => {
+    fs.chmodSync(root, 0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const parent = path.join(root, 'private-parent');
+  const storage = path.join(parent, 'storage');
+  const repository = new EventRepository(path.join(storage, 'events.json'));
+
+  for (const directory of [parent, storage]) {
+    const stats = fs.statSync(directory);
+    assert.equal(stats.uid, process.getuid());
+    assert.equal(stats.mode & 0o777, 0o700);
+  }
+
+  assert.equal(fs.readFileSync(repository.filePath, 'utf8'), '[]\\n');
+  assert.deepEqual(repository.read(), []);
+});

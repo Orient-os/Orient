@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 class WorkflowLeaseRepository {
   constructor(filePath, { lockTimeoutMs = 30000 } = {}) {
@@ -10,8 +11,9 @@ class WorkflowLeaseRepository {
     }
     this.lockTimeoutMs = lockTimeoutMs;
     this.filePath = path.resolve(filePath);
+    const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), { mode: 0o700, repairPermissions: true, errorPrefix: 'WORKFLOW_LEASE_STORAGE' });
+    this.filePath = path.join(directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     if (!fs.existsSync(this.filePath)) {
       try {
         const fd = fs.openSync(this.filePath, 'wx', 0o600);

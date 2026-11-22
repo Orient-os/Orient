@@ -373,12 +373,16 @@ test('atomic writes fsync and close both temporary file and containing directory
   const originalFsyncSync = fs.fsyncSync;
   let temporaryDescriptor;
   let directoryDescriptor;
+  let directoryOpenMode;
   let fsyncCalls = 0;
 
   fs.openSync = function (target, ...args) {
     const descriptor = originalOpenSync.call(this, target, ...args);
     if (String(target).startsWith(repository.filePath + '.tmp.')) temporaryDescriptor = descriptor;
-    if (target === repository.directory) directoryDescriptor = descriptor;
+    if (target === repository.directory) {
+      directoryDescriptor = descriptor;
+      directoryOpenMode = args[1];
+    }
     return descriptor;
   };
   fs.fsyncSync = function (descriptor) {
@@ -388,6 +392,7 @@ test('atomic writes fsync and close both temporary file and containing directory
   try {
     repository.write([{ id: 'durable-event', type: 'test.created' }]);
     assert.equal(fsyncCalls, 2, 'the temp file and its containing directory must both be synced');
+    assert.equal(directoryOpenMode, 0o600, 'directory open must pass an explicit non-creating mode for static analysis');
     assert.throws(() => fs.fstatSync(temporaryDescriptor), error => error.code === 'EBADF');
     assert.throws(() => fs.fstatSync(directoryDescriptor), error => error.code === 'EBADF');
   } finally {

@@ -57,7 +57,7 @@ write_json quality-gate qualitygates/project_status \
 write_json measures measures/component \
   --data-urlencode "component=$project_key" \
   --data-urlencode "pullRequest=$pull_request" \
-  --data-urlencode "metricKeys=new_duplicated_lines_density,new_security_rating,new_violations,new_vulnerabilities,new_security_hotspots"
+  --data-urlencode "metricKeys=new_duplicated_lines_density,new_reliability_rating,new_security_rating,new_violations,new_vulnerabilities,new_security_hotspots"
 
 # Export every issue page, bounded to avoid an unbounded CI job.
 page=1

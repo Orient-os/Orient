@@ -330,3 +330,18 @@ test('supports legacy errorPrefix callers while preserving specific error catego
     );
   });
 });
+
+
+test('trusts Android AID_SYSTEM ownership only for exact canonical platform ancestors', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemOwnerAncestor;
+  const trusted = { uid: 1000n, gid: 1000n, mode: 0o40755n };
+  for (const candidate of ['/data', '/data/data', '/data/user/0']) {
+    assert.equal(predicate(candidate, trusted, { platform: 'android' }), true, candidate);
+  }
+  for (const candidate of ['/data/user', '/data/user/10', '/data/local/tmp', '/system', '/storage/emulated/0']) {
+    assert.equal(predicate(candidate, trusted, { platform: 'android' }), false, candidate);
+  }
+  assert.equal(predicate('/data', { ...trusted, uid: 0n }, { platform: 'android' }), false);
+  assert.equal(predicate('/data', { ...trusted, gid: 10259n }, { platform: 'android' }), false);
+  assert.equal(predicate('/data', trusted, { platform: 'linux' }), false);
+});

@@ -1126,7 +1126,7 @@ test('pending approval bypass applies only to the exact already-running step ide
   const result = await exact.coordinator.resume('execution-pending-approval');
   assert.equal(result.resumed, true);
   assert.ok(exact.calls.runArgs, 'the exact in-flight operation is delegated to the agent loop for idempotency reconciliation');
-  assert.equal(exact.calls.runArgs.approvalReference, null);
+  assert.equal(exact.calls.runArgs.approval, null);
   assert.equal(exact.calls.leaseReleases, 1);
 });
 
@@ -1147,7 +1147,7 @@ test('resume requires a durable approved decision for an explicit approval refer
   assert.equal(calls.approvalLookup.approvalId, 'approval-durable');
   assert.equal(calls.approvalLookup.options.executionId, 'execution-pending-approval');
   assert.equal(calls.approvalLookup.options.tenantId, 'tenant-a');
-  assert.equal(calls.runArgs.approvalReference.approvalId, 'approval-durable');
-  assert.equal(calls.runArgs.approvalReference.executionId, 'execution-pending-approval');
+  assert.equal(calls.runArgs.approval.approvalId, 'approval-durable');
+  assert.equal(calls.runArgs.approval.executionId, 'execution-pending-approval');
   assert.equal(calls.leaseReleases, 1);
 });

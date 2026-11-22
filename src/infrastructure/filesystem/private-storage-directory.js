@@ -86,11 +86,16 @@ function syncDirectory(directory) {
 }
 
 function defaultTrustedOwners(serviceUid) {
-  const owners = new Set([0n, serviceUid]);
-  const androidRuntime = process.platform === 'android' ||
-    (process.env.ANDROID_ROOT === '/system' && fs.existsSync('/system/build.prop'));
-  if (androidRuntime) owners.add(1000n); // Android AID_SYSTEM owns platform path ancestors.
-  return owners;
+  // Android AID_SYSTEM is trusted only for the exact platform ancestors
+  // below; it must not become a generally trusted owner for arbitrary paths.
+  return new Set([0n, serviceUid]);
+}
+
+function isTrustedAndroidSystemOwnerAncestor(candidate, stats, { platform }) {
+  return platform === 'android' &&
+    ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS.has(candidate) &&
+    stats.uid === 1000n &&
+    stats.gid === 1000n;
 }
 
 function ensurePrivateStorageDirectory(directory, {
@@ -223,7 +228,12 @@ function ensurePrivateStorageDirectory(directory, {
       return;
     }
 
-    if (!trustedOwners.has(stats.uid)) {
+    const trustedAndroidSystemOwner = isTrustedAndroidSystemOwnerAncestor(
+      candidate,
+      stats,
+      { platform: process.platform }
+    );
+    if (!trustedOwners.has(stats.uid) && !trustedAndroidSystemOwner) {
       fail('Private storage ancestor is not owned by a trusted principal', codes.parentUntrusted);
     }
     const ancestorMode = stats.mode & 0o7777n;
@@ -293,4 +303,5 @@ function ensurePrivateStorageDirectory(directory, {
 module.exports = ensurePrivateStorageDirectory;
 
 module.exports.isTrustedAndroidSystemGroupAncestor = isTrustedAndroidSystemGroupAncestor;
+module.exports.isTrustedAndroidSystemOwnerAncestor = isTrustedAndroidSystemOwnerAncestor;
 module.exports.isTrustedAndroidAppFilesAncestor = isTrustedAndroidAppFilesAncestor;

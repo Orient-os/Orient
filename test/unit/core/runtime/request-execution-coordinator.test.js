@@ -1086,8 +1086,8 @@ function createPendingApprovalResumeFixture({ runningStepMutation = null, approv
     quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
     quotaPolicy: { toJSON: () => ({}) },
     approvalService: {
-      getApprovedForExecution: async (approvalId, options) => {
-        calls.approvalLookup = { approvalId, options };
+      getApprovedForExecution: async request => {
+        calls.approvalLookup = request;
         return approvalRecord;
       },
       findReusable: async () => null
@@ -1145,8 +1145,8 @@ test('resume requires a durable approved decision for an explicit approval refer
 
   assert.equal(result.resumed, true);
   assert.equal(calls.approvalLookup.approvalId, 'approval-durable');
-  assert.equal(calls.approvalLookup.options.executionId, 'execution-pending-approval');
-  assert.equal(calls.approvalLookup.options.tenantId, 'tenant-a');
+  assert.equal(calls.approvalLookup.executionId, 'execution-pending-approval');
+  assert.equal(calls.approvalLookup.tenantId, 'tenant-a');
   assert.equal(calls.runArgs.approval.approvalId, 'approval-durable');
   assert.equal(calls.runArgs.approval.executionId, 'execution-pending-approval');
   assert.equal(calls.leaseReleases, 1);

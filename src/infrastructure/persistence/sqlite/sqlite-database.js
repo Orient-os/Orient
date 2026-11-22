@@ -5,21 +5,109 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
+function unsafeStorageFile(message, cause) {
+  return Object.assign(new Error(message, cause ? { cause } : undefined), {
+    code: 'SQLITE_STORAGE_FILE_UNSAFE'
+  });
+}
+
+function inspectPrivateFile(filePath, { create = false } = {}) {
+  let descriptor;
+  let created = false;
+  try {
+    if (create) {
+      try {
+        descriptor = fs.openSync(filePath, 'wx', 0o600);
+        created = true;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+    }
+
+    if (descriptor === undefined) {
+      const noFollow = fs.constants.O_NOFOLLOW || 0;
+      descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+    }
+
+    const stats = fs.fstatSync(descriptor, { bigint: true });
+    if (!stats.isFile() || stats.nlink !== 1n) {
+      throw unsafeStorageFile('SQLite storage files must be regular single-link files');
+    }
+
+    if (process.platform !== 'win32' && typeof process.getuid === 'function') {
+      if (stats.uid !== BigInt(process.getuid())) {
+        throw unsafeStorageFile('SQLite storage files must be owned by the application user');
+      }
+      if ((stats.mode & 0o7777n) !== 0o600n) fs.fchmodSync(descriptor, 0o600);
+      const secured = fs.fstatSync(descriptor, { bigint: true });
+      if ((secured.mode & 0o7777n) !== 0o600n) {
+        throw unsafeStorageFile('SQLite storage files must have mode 0600');
+      }
+    }
+
+    return { dev: stats.dev, ino: stats.ino, created };
+  } catch (error) {
+    if (error.code === 'SQLITE_STORAGE_FILE_UNSAFE') throw error;
+    throw unsafeStorageFile('SQLite storage file could not be opened safely', error);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function verifySameFile(filePath, expected) {
+  const actual = inspectPrivateFile(filePath);
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    throw unsafeStorageFile('SQLite database path changed while opening');
+  }
+}
+
+function secureSidecarIfPresent(filePath) {
+  let stats;
+  try {
+    stats = fs.lstatSync(filePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw unsafeStorageFile('SQLite sidecar could not be inspected safely', error);
+  }
+  if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) {
+    throw unsafeStorageFile('SQLite WAL/SHM sidecars must be regular single-link files');
+  }
+  const identity = inspectPrivateFile(filePath);
+  verifySameFile(filePath, identity);
+}
+
 class SqliteDatabase {
   constructor(filePath) {
     if (typeof filePath !== 'string' || !filePath) throw new TypeError('filePath is required');
     this.filePath = filePath === ':memory:' ? ':memory:' : path.resolve(filePath);
+    this.connection = null;
+
     if (this.filePath !== ':memory:') {
       const directory = ensurePrivateStorageDirectory(path.dirname(this.filePath), {
         mode: 0o700, repairPermissions: true, errorPrefix: 'SQLITE_STORAGE'
       });
       this.filePath = path.join(directory, path.basename(this.filePath));
+
+      const expectedFile = inspectPrivateFile(this.filePath, { create: true });
+      try {
+        this.connection = new DatabaseSync(this.filePath);
+        verifySameFile(this.filePath, expectedFile);
+        this.connection.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
+        secureSidecarIfPresent(this.filePath + '-wal');
+        secureSidecarIfPresent(this.filePath + '-shm');
+        verifySameFile(this.filePath, expectedFile);
+      } catch (error) {
+        if (this.connection) {
+          try { this.connection.close(); } catch {}
+          this.connection = null;
+        }
+        throw error;
+      }
+    } else {
+      this.connection = new DatabaseSync(this.filePath);
+      this.connection.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
     }
-    this.connection = new DatabaseSync(this.filePath);
-    if (this.filePath !== ':memory:' && process.platform !== 'win32') {
-      fs.chmodSync(this.filePath, 0o600);
-    }
-    this.connection.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
+
     this.initialize();
   }
 

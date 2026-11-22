@@ -1,0 +1,2 @@
+Temporary, non-production marker used only to validate the protected-main pull request workflow.
+This file must be removed when the protection test is complete.

@@ -16,6 +16,18 @@ function readBoundedFile(fd, maxBytes) {
   return buffer.subarray(0, total).toString('utf8');
 }
 
+function syncDirectory(directory) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(directory, 'r');
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
 class EventRepository {
   constructor(filePath, { lockTimeoutMs = 30000 } = {}) {
     if (!filePath) {
@@ -36,29 +48,32 @@ class EventRepository {
     if (typeof fs.constants.O_NOFOLLOW !== 'number') {
       fail('Safe JSON event storage is unsupported on this platform', 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
     }
-
-    // Validate every canonical ancestor before creating or opening any storage
-    // descendant. Checking only the immediate parent permits an attacker-
-    // writable grandparent to replace the supposedly private storage tree.
     this.directory = ensurePrivateStorageDirectory(this.directory, {
-      mode: 0o700,
       repairPermissions: true,
-      errorPrefix: 'EVENT_STORAGE'
+      errorCodes: {
+        directoryInvalid: 'EVENT_STORAGE_DIRECTORY_INVALID',
+        directoryOwnerInvalid: 'EVENT_STORAGE_DIRECTORY_OWNER_INVALID',
+        directoryPermissionsInvalid: 'EVENT_STORAGE_DIRECTORY_PERMISSIONS_INVALID',
+        parentInvalid: 'EVENT_STORAGE_PARENT_UNTRUSTED',
+        parentUntrusted: 'EVENT_STORAGE_PARENT_UNTRUSTED'
+      }
     });
     this.filePath = path.join(this.directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
 
+    let descriptor;
+    let created = false;
     try {
-      const fd = fs.openSync(this.filePath, 'wx', 0o600);
-      try {
-        fs.writeFileSync(fd, '[]\n', 'utf8');
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
+      descriptor = fs.openSync(this.filePath, 'wx', 0o600);
+      created = true;
+      fs.writeFileSync(descriptor, '[]\n', 'utf8');
+      fs.fsyncSync(descriptor);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
     }
+    if (created) syncDirectory(this.directory);
   }
 
   read() {
@@ -66,8 +81,26 @@ class EventRepository {
     try {
       descriptor = fs.openSync(this.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       const stats = fs.fstatSync(descriptor);
-      if (!stats.isFile()) fail('Event storage must be a regular file', 'EVENT_STORAGE_CORRUPT');
+      if (!stats.isFile() || (process.platform !== 'win32' && stats.nlink !== 1)) {
+        fail('Event storage must be a single-link regular file', 'EVENT_STORAGE_CORRUPT');
+      }
       if (stats.size > MAX_EVENT_FILE_BYTES) fail('Event storage exceeds its maximum permitted size', 'EVENT_STORAGE_TOO_LARGE');
+      if (process.platform !== 'win32' && typeof process.getuid === 'function') {
+        if (stats.uid !== process.getuid()) {
+          fail('Event storage file must be owned by the application user', 'EVENT_STORAGE_CORRUPT');
+        }
+        if ((stats.mode & 0o7777) !== 0o600) {
+          try { fs.fchmodSync(descriptor, 0o600); } catch (error) {
+            const invalid = new Error('Event storage file permissions could not be secured');
+            invalid.code = 'EVENT_STORAGE_PERMISSIONS_INVALID';
+            invalid.cause = error;
+            throw invalid;
+          }
+          if ((fs.fstatSync(descriptor).mode & 0o7777) !== 0o600) {
+            fail('Event storage file must be private (mode 0600)', 'EVENT_STORAGE_PERMISSIONS_INVALID');
+          }
+        }
+      }
       const raw = readBoundedFile(descriptor, MAX_EVENT_FILE_BYTES);
       if (!raw.trim()) return [];
       const parsed = JSON.parse(raw);
@@ -75,7 +108,7 @@ class EventRepository {
       return parsed;
     } catch (error) {
       if (error.code === 'ELOOP') fail('Event storage must not be a symbolic link', 'EVENT_STORAGE_CORRUPT');
-      if (['EVENT_STORAGE_CORRUPT','EVENT_STORAGE_TOO_LARGE','EVENT_STORAGE_UNSAFE_FILESYSTEM'].includes(error.code)) throw error;
+      if (['EVENT_STORAGE_CORRUPT','EVENT_STORAGE_TOO_LARGE','EVENT_STORAGE_UNSAFE_FILESYSTEM','EVENT_STORAGE_PERMISSIONS_INVALID'].includes(error.code)) throw error;
       if (error instanceof SyntaxError) { const invalid = new Error('Event storage contains invalid JSON'); invalid.code = 'EVENT_STORAGE_CORRUPT'; invalid.cause = error; throw invalid; }
       throw error;
     } finally { if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} } }
@@ -85,6 +118,7 @@ class EventRepository {
     const temporaryFile = this.filePath + '.tmp.' + crypto.randomUUID();
     let descriptor;
     let created = false;
+    let renamed = false;
     try {
       descriptor = fs.openSync(temporaryFile, 'wx', 0o600);
       created = true;
@@ -93,9 +127,12 @@ class EventRepository {
       fs.closeSync(descriptor);
       descriptor = undefined;
       fs.renameSync(temporaryFile, this.filePath);
+      renamed = true;
+      syncDirectory(this.directory);
     } catch (error) {
       if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} }
-      if (created) { try { fs.unlinkSync(temporaryFile); } catch {} }
+      if (created && !renamed) { try { fs.unlinkSync(temporaryFile); } catch {} }
+      if (renamed) error.committed = true;
       throw error;
     }
   }

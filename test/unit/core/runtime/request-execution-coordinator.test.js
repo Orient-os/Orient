@@ -598,10 +598,7 @@ test('resume fails closed before tool execution when a pending approval has no d
     quotaPolicy: { toJSON: () => ({}) },
     approvalService: {
       getApprovedForExecution: async () => null,
-      findReusable: async request => {
-        calls.reusableLookup = request;
-        return reusableApprovalRecord;
-      }
+      findReusable: async () => null
     },
     tenantId: 'tenant-a',
     maxInputChars: 1000
@@ -1098,7 +1095,10 @@ function createPendingApprovalResumeFixture({
         calls.approvalLookup = request;
         return approvalRecord;
       },
-      findReusable: async () => null
+      findReusable: async request => {
+        calls.reusableLookup = request;
+        return reusableApprovalRecord;
+      }
     },
     tenantId: 'tenant-a',
     userId: 'owner-a',

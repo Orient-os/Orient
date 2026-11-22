@@ -29,6 +29,12 @@ android {
 // Permit it in the test JVM so the contract test exercises the same explicit header sent by the Android client.
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     jvmArgs("-Dsun.net.http.allowRestrictedHeaders=true")
+    // Robolectric downloads Android SDK jars at test runtime. Use Google's
+    // Maven Central mirror to avoid repo1.maven.org rate limiting CI workers.
+    systemProperty(
+        "robolectric.dependency.repo.url",
+        "https://maven-central.storage-download.googleapis.com/maven2"
+    )
 }
 
 dependencies {

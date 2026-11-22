@@ -17,10 +17,11 @@ api_get() {
   shift
   local auth=()
   if [[ -n "${SONAR_TOKEN:-}" ]]; then
-    auth=(--user "${SONAR_TOKEN}:")
+    auth=(-H "Authorization: Bearer ${SONAR_TOKEN}")
   fi
-  curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
-    --get "${base_url%/}/api/$endpoint" "${auth[@]}" "$@" \
+  curl --silent --show-error --fail-with-body \
+    --retry 3 --retry-delay 1 --retry-max-time 15 \
+    --get "${base_url%/}/api/$endpoint" "$@" "${auth[@]}" \
     -H 'Accept: application/json'
 }
 
@@ -30,12 +31,16 @@ write_json() {
   shift 2
   local tmp="$out_dir/$name.tmp"
   if ! api_get "$endpoint" "$@" > "$tmp"; then
-    echo "SonarCloud API request failed for endpoint '$endpoint'. Check project key, project visibility, and whether an authorized read-only SONAR_TOKEN is required." >&2
+    if jq -e 'type == "object" and has("errors")' "$tmp" >/dev/null 2>&1; then
+      echo "SonarCloud API error for '$endpoint': $(jq -c '.errors' "$tmp" | head -c 1000)" >&2
+    else
+      echo "SonarCloud API request failed for '$endpoint' (HTTP/network failure); verify the endpoint, project key, and read-only token permissions." >&2
+    fi
     rm -f "$tmp"
     return 1
   fi
   if ! jq -e 'type == "object" and (has("errors") | not)' "$tmp" >/dev/null; then
-    echo "SonarCloud API returned an error payload for endpoint '$endpoint': $(jq -c '.errors // .' "$tmp" | head -c 1000)" >&2
+    echo "SonarCloud API returned an error payload for '$endpoint': $(jq -c '.errors // .' "$tmp" | head -c 1000)" >&2
     rm -f "$tmp"
     return 1
   fi
@@ -48,10 +53,11 @@ write_json quality-gate qualitygates/project_status \
   --data-urlencode "projectKey=$project_key" \
   --data-urlencode "pullRequest=$pull_request"
 
+# SonarCloud names the new-code issue count new_violations (not new_issues).
 write_json measures measures/component \
   --data-urlencode "component=$project_key" \
   --data-urlencode "pullRequest=$pull_request" \
-  --data-urlencode "metricKeys=new_duplicated_lines_density,new_security_rating,new_issues,new_vulnerabilities,new_security_hotspots"
+  --data-urlencode "metricKeys=new_duplicated_lines_density,new_reliability_rating,new_security_rating,new_violations,new_vulnerabilities,new_security_hotspots"
 
 # Export every issue page, bounded to avoid an unbounded CI job.
 page=1

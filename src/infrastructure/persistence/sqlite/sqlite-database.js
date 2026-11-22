@@ -31,7 +31,7 @@ function inspectPrivateFile(filePath, { create = false } = {}) {
           code: 'SQLITE_STORAGE_UNSAFE_FILESYSTEM'
         });
       }
-      descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+      descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow, 0o600);
     }
 
     const stats = fs.fstatSync(descriptor, { bigint: true });

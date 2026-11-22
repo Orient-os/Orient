@@ -185,6 +185,7 @@ test('approval challenge exposes a bounded, verifiable project-change summary', 
             tool: 'project.execute_change',
             capability: 'workspace.write',
             tenantId: 'tenant-a',
+            planSha256: require('node:crypto').createHash('sha256').update('verified-plan-for-approval-summary-test', 'utf8').digest('hex'),
             input: { proposals }
           }
         });
@@ -230,6 +231,10 @@ test('approval challenge exposes a bounded, verifiable project-change summary', 
   assert.equal(summary.changes[1].contentTruncated, true);
   assert.equal(summary.changes[2].action, 'invalid');
   assert.match(summary.reviewNotice, /expected current-file SHA-256/);
+  assert.equal(
+    issuedInput.scope.planSha256,
+    require('node:crypto').createHash('sha256').update('verified-plan-for-approval-summary-test', 'utf8').digest('hex')
+  );
 });
 
 

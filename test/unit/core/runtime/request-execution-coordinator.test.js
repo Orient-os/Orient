@@ -598,7 +598,10 @@ test('resume fails closed before tool execution when a pending approval has no d
     quotaPolicy: { toJSON: () => ({}) },
     approvalService: {
       getApprovedForExecution: async () => null,
-      findReusable: async () => null
+      findReusable: async request => {
+        calls.reusableLookup = request;
+        return reusableApprovalRecord;
+      }
     },
     tenantId: 'tenant-a',
     maxInputChars: 1000
@@ -1017,7 +1020,11 @@ test('restored checkpoints cannot cross owner or tenant boundaries before durabl
 });
 
 
-function createPendingApprovalResumeFixture({ runningStepMutation = null, approvalRecord = null } = {}) {
+function createPendingApprovalResumeFixture({
+  runningStepMutation = null,
+  approvalRecord = null,
+  reusableApprovalRecord = null
+} = {}) {
   const ExecutionContext = require('../../../../src/core/execution/execution-context');
   const context = new ExecutionContext({
     requestId: 'request-pending-approval',
@@ -1043,6 +1050,7 @@ function createPendingApprovalResumeFixture({ runningStepMutation = null, approv
   const calls = {
     runArgs: null,
     approvalLookup: null,
+    reusableLookup: null,
     leaseReleases: 0
   };
   const coordinator = new RequestExecutionCoordinator({
@@ -1128,6 +1136,35 @@ test('pending approval bypass applies only to the exact already-running step ide
   assert.ok(exact.calls.runArgs, 'the exact in-flight operation is delegated to the agent loop for idempotency reconciliation');
   assert.equal(exact.calls.runArgs.approval, null);
   assert.equal(exact.calls.leaseReleases, 1);
+});
+
+test('resume recovers only a reusable durable approval scoped to the pending execution step', async () => {
+  const reusableApprovalRecord = {
+    approvalId: 'approval-reusable',
+    executionId: 'execution-pending-approval',
+    tenantId: 'tenant-a',
+    step: 1,
+    tool: 'danger.write',
+    planRevision: 1,
+    decision: 'approved',
+    status: 'approved'
+  };
+  const { coordinator, calls } = createPendingApprovalResumeFixture({
+    reusableApprovalRecord
+  });
+
+  const result = await coordinator.resume('execution-pending-approval');
+
+  assert.equal(result.resumed, true);
+  assert.deepEqual(calls.reusableLookup, {
+    executionId: 'execution-pending-approval',
+    step: 1,
+    tool: 'danger.write',
+    planRevision: 1,
+    tenantId: 'tenant-a'
+  });
+  assert.equal(calls.runArgs.approval.approvalId, 'approval-reusable');
+  assert.equal(calls.leaseReleases, 1);
 });
 
 test('resume requires a durable approved decision for an explicit approval reference', async () => {

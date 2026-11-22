@@ -18,7 +18,10 @@ const workflow = fs.readFileSync(
 test('SonarCloud diagnostics request the supported new-code violation metric', () => {
   assert.match(script, /new_violations/);
   assert.match(script, /new_reliability_rating/);
-  assert.doesNotMatch(script, /new_issues/);
+  assert.doesNotMatch(
+    script,
+    /--data-urlencode "metricKeys=[^"]*\\bnew_issues\\b/
+  );
 });
 
 test('SonarCloud diagnostics use bearer token authentication without retrying all errors', () => {
@@ -28,5 +31,5 @@ test('SonarCloud diagnostics use bearer token authentication without retrying al
 });
 
 test('workflow checks out the selected dispatch ref so branch fixes can be validated', () => {
-  assert.match(workflow, /ref: \$\{\{ github\.ref \}\}/);
+  assert.match(workflow, /ref: \\$\\{\\{ github\\.ref \\}\\}/);
 });

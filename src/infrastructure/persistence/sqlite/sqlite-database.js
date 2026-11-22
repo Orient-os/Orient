@@ -24,20 +24,19 @@ function inspectPrivateFile(filePath, { create = false } = {}) {
       }
     }
 
-    const pathStats = fs.lstatSync(filePath, { bigint: true });
-    if (pathStats.isSymbolicLink() || !pathStats.isFile() || pathStats.nlink !== 1n) {
-      throw unsafeStorageFile('SQLite storage files must be regular single-link files');
-    }
-
     if (descriptor === undefined) {
-      const noFollow = fs.constants.O_NOFOLLOW || 0;
+      const noFollow = fs.constants.O_NOFOLLOW;
+      if (typeof noFollow !== 'number' || noFollow === 0) {
+        throw Object.assign(new Error('SQLite requires O_NOFOLLOW for file-backed storage'), {
+          code: 'SQLITE_STORAGE_UNSAFE_FILESYSTEM'
+        });
+      }
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
     }
 
     const stats = fs.fstatSync(descriptor, { bigint: true });
-    if (!stats.isFile() || stats.nlink !== 1n ||
-        stats.dev !== pathStats.dev || stats.ino !== pathStats.ino) {
-      throw unsafeStorageFile('SQLite storage file changed during descriptor validation');
+    if (!stats.isFile() || stats.nlink !== 1n) {
+      throw unsafeStorageFile('SQLite storage files must be regular single-link files');
     }
 
     if (process.platform !== 'win32' && typeof process.getuid === 'function') {
@@ -53,7 +52,9 @@ function inspectPrivateFile(filePath, { create = false } = {}) {
 
     return { dev: stats.dev, ino: stats.ino, created };
   } catch (error) {
-    if (error.code === 'SQLITE_STORAGE_FILE_UNSAFE') throw error;
+    if (error.code === 'SQLITE_STORAGE_FILE_UNSAFE' ||
+        error.code === 'SQLITE_STORAGE_UNSAFE_FILESYSTEM' ||
+        error.code === 'ENOENT') throw error;
     throw unsafeStorageFile('SQLite storage file could not be opened safely', error);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
@@ -68,18 +69,13 @@ function verifySameFile(filePath, expected) {
 }
 
 function secureSidecarIfPresent(filePath) {
-  let stats;
   try {
-    stats = fs.lstatSync(filePath);
+    const identity = inspectPrivateFile(filePath);
+    verifySameFile(filePath, identity);
   } catch (error) {
     if (error.code === 'ENOENT') return;
-    throw unsafeStorageFile('SQLite sidecar could not be inspected safely', error);
+    throw error;
   }
-  if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) {
-    throw unsafeStorageFile('SQLite WAL/SHM sidecars must be regular single-link files');
-  }
-  const identity = inspectPrivateFile(filePath);
-  verifySameFile(filePath, identity);
 }
 
 class SqliteDatabase {

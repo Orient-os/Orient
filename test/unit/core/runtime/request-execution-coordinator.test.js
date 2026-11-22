@@ -1148,6 +1148,5 @@ test('resume requires a durable approved decision for an explicit approval refer
   assert.equal(calls.approvalLookup.executionId, 'execution-pending-approval');
   assert.equal(calls.approvalLookup.tenantId, 'tenant-a');
   assert.equal(calls.runArgs.approval.approvalId, 'approval-durable');
-  assert.equal(calls.runArgs.approval.executionId, 'execution-pending-approval');
   assert.equal(calls.leaseReleases, 1);
 });

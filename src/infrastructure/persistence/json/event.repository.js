@@ -19,7 +19,8 @@ function readBoundedFile(fd, maxBytes) {
 function syncDirectory(directory) {
   let descriptor;
   try {
-    descriptor = fs.openSync(directory, 'r');
+     // O_RDONLY never creates a file; the explicit mode keeps static analysis conservative.
+    descriptor = fs.openSync(directory, 'r', 0o600);
     fs.fsyncSync(descriptor);
   } catch (error) {
     if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;

@@ -387,3 +387,87 @@ test('SQLite rejects worker mission-event and workflow writes until atomic durab
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('SQLite rejects symbolic-link database paths without modifying the link target', t => {
+  if (process.platform === 'win32') {
+    t.skip('Symlink creation requires platform-specific privileges on Windows');
+    return;
+  }
+
+  const SqliteDatabase = require('../../../src/infrastructure/persistence/sqlite/sqlite-database');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-symlink-'));
+  const target = path.join(directory, 'target.db');
+  const link = path.join(directory, 'orient.db');
+  fs.writeFileSync(target, 'do-not-modify\n', { mode: 0o600 });
+  fs.symlinkSync(target, link);
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  assert.throws(
+    () => new SqliteDatabase(link),
+    error => error && error.code === 'SQLITE_STORAGE_FILE_UNSAFE'
+  );
+  assert.equal(fs.readFileSync(target, 'utf8'), 'do-not-modify\n');
+});
+
+test('SQLite rejects hard-linked database files before opening them', t => {
+  if (process.platform === 'win32') {
+    t.skip('Hard-link ownership semantics are not validated on Windows');
+    return;
+  }
+
+  const SqliteDatabase = require('../../../src/infrastructure/persistence/sqlite/sqlite-database');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-hardlink-'));
+  const target = path.join(directory, 'target.db');
+  const link = path.join(directory, 'orient.db');
+  fs.writeFileSync(target, 'do-not-modify\n', { mode: 0o600 });
+  try {
+    fs.linkSync(target, link);
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+      t.skip('Hard links are not supported by this filesystem');
+      return;
+    }
+    throw error;
+  }
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  assert.throws(
+    () => new SqliteDatabase(link),
+    error => error && error.code === 'SQLITE_STORAGE_FILE_UNSAFE'
+  );
+  assert.equal(fs.readFileSync(target, 'utf8'), 'do-not-modify\n');
+});
+
+test('SQLite database and live WAL/SHM sidecars are private regular single-link files', () => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
+
+  const SqliteDatabase = require('../../../src/infrastructure/persistence/sqlite/sqlite-database');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-sidecars-'));
+  const filePath = path.join(directory, 'orient.db');
+  let database;
+  try {
+    database = new SqliteDatabase(filePath);
+    database.exec('CREATE TABLE IF NOT EXISTS sidecar_probe (id INTEGER PRIMARY KEY);');
+    database.run('INSERT INTO sidecar_probe(id) VALUES (?)', [1]);
+
+    for (const candidate of [filePath, filePath + '-wal', filePath + '-shm']) {
+      let stats;
+      try {
+        stats = fs.lstatSync(candidate);
+      } catch (error) {
+        if (error.code === 'ENOENT' && candidate.endsWith('-shm')) continue;
+        throw error;
+      }
+      assert.equal(stats.isSymbolicLink(), false, candidate + ' must not be a symlink');
+      assert.equal(stats.isFile(), true, candidate + ' must be a regular file');
+      assert.equal(stats.nlink, 1, candidate + ' must have one hard link');
+      assert.equal(stats.uid, process.getuid(), candidate + ' must be owned by the process user');
+      assert.equal(stats.mode & 0o7777, 0o600, candidate + ' must have mode 0600');
+    }
+  } finally {
+    if (database) database.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

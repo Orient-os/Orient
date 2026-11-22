@@ -1050,6 +1050,11 @@ function createPendingApprovalResumeFixture({ runningStepMutation = null, approv
     agentExecutionCoordinator: {
       run: async args => {
         calls.runArgs = args;
+        // AgentExecutionCoordinator owns the post-loop lifecycle transitions.
+        // This fixture replaces it, so reproduce the same terminal path before
+        // RequestExecutionCoordinator commits the completed execution.
+        args.context.transitionAgentTo(AgentState.LIFECYCLE.OBSERVING);
+        args.context.transitionAgentTo(AgentState.LIFECYCLE.EVALUATING);
         return {
           loopResult: { result: { ok: true }, evaluation: { success: true } },
           replanningDecision: { toJSON: () => ({ outcome: 'done' }) }

@@ -3,93 +3,191 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const ANDROID_SYSTEM_WRITABLE_ANCESTORS = new Set([
+function fail(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  throw error;
+}
+
+const ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS = new Set([
   '/data',
+  '/data/data',
   '/data/user/0'
 ]);
 
-function fail(code, message) {
-  throw Object.assign(new Error(message), { code });
-}
+function isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+  platform,
+  processGid,
+  supplementaryGroups
+}) {
+  if (platform !== 'android' ||
+      !ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS.has(candidate)) {
+    return false;
+  }
 
-function androidSystemAncestorAllowed(candidate, stats) {
-  if (process.platform !== 'android' ||
-      !ANDROID_SYSTEM_WRITABLE_ANCESTORS.has(candidate) ||
-      typeof process.getgid !== 'function' ||
-      typeof process.getgroups !== 'function') return false;
-
-  const groups = new Set([process.getgid(), ...process.getgroups()]);
+  const processGroups = new Set([
+    BigInt(processGid),
+    ...supplementaryGroups.map(value => BigInt(value))
+  ]);
   const mode = stats.mode & 0o7777n;
+
   return stats.uid === 1000n &&
     stats.gid === 1000n &&
     (mode & 0o0020n) !== 0n &&
     (mode & 0o0002n) === 0n &&
     (mode & 0o1000n) === 0n &&
-    !groups.has(1000);
+    !processGroups.has(1000n);
 }
 
-function androidAppFilesAncestorAllowed(candidate, stats) {
-  if (process.platform !== 'android' ||
+function isTrustedAndroidAppFilesAncestor(candidate, stats, {
+  platform,
+  processUid,
+  processGid,
+  parentPath,
+  parentStats
+}) {
+  if (platform !== 'android' ||
+      typeof parentPath !== 'string' ||
+      !parentStats ||
       path.basename(candidate) !== 'files' ||
-      typeof process.getuid !== 'function' ||
-      typeof process.getgid !== 'function') return false;
+      path.dirname(candidate) !== parentPath ||
+      !['/data/data', '/data/user/0'].includes(path.dirname(parentPath))) {
+    return false;
+  }
 
-  const appRoot = path.dirname(candidate);
-  if (!['/data/data', '/data/user/0'].includes(path.dirname(appRoot))) return false;
+  const uid = BigInt(processUid);
+  const gid = BigInt(processGid);
+  const mode = stats.mode & 0o7777n;
+  const parentMode = parentStats.mode & 0o7777n;
+  const parentType = parentStats.mode & 0o170000n;
 
-  let parent;
-  try { parent = fs.lstatSync(appRoot, { bigint: true }); } catch { return false; }
-  const uid = BigInt(process.getuid());
-  const gid = BigInt(process.getgid());
+  // Android assigns each application a private UID/GID. The app data root
+  // must be private (0700); only its direct "files" child may use 0771.
   return uid === gid &&
-    stats.uid === uid && stats.gid === gid &&
-    (stats.mode & 0o7777n) === 0o0771n &&
-    parent.isDirectory() &&
-    parent.uid === uid && parent.gid === gid &&
-    (parent.mode & 0o7777n) === 0o0700n;
+    stats.uid === uid &&
+    stats.gid === gid &&
+    mode === 0o0771n &&
+    parentType === 0o040000n &&
+    parentStats.uid === uid &&
+    parentStats.gid === gid &&
+    parentMode === 0o0700n;
+}
+
+function syncDirectory(directory) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(directory, 'r');
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function defaultTrustedOwners(serviceUid) {
+  const owners = new Set([0n, serviceUid]);
+  const androidRuntime = process.platform === 'android' ||
+    (process.env.ANDROID_ROOT === '/system' && fs.existsSync('/system/build.prop'));
+  if (androidRuntime) owners.add(1000n); // Android AID_SYSTEM owns platform path ancestors.
+  return owners;
 }
 
 function ensurePrivateStorageDirectory(directory, {
   mode = 0o700,
   repairPermissions = false,
-  errorPrefix = 'EVENT_STORAGE'
+  create = true,
+  trustedOwnerUids,
+  errorCodes = {},
+  errorPrefix = null
 } = {}) {
   if (typeof directory !== 'string' || !directory.trim()) {
     throw new TypeError('directory is required');
   }
-
-  const requested = path.resolve(directory);
-  if (requested === path.parse(requested).root) {
-    fail(errorPrefix + '_DIRECTORY_INVALID', 'Filesystem root cannot be application storage');
+  if (typeof create !== 'boolean') {
+    throw new TypeError('create must be a boolean');
+  }
+  if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
+    throw new TypeError('mode must be a valid POSIX permission mode');
   }
 
-  // A configured storage leaf must never be a symlink, even if its target is trusted.
-  try {
-    const leaf = fs.lstatSync(requested, { bigint: true });
-    if (leaf.isSymbolicLink() || !leaf.isDirectory()) {
-      fail(errorPrefix + '_DIRECTORY_INVALID', 'Storage leaf must be a real directory');
+  const prefixedCodes = typeof errorPrefix === 'string' && errorPrefix
+    ? {
+      directoryInvalid: errorPrefix + '_DIRECTORY_INVALID',
+      directoryOwnerInvalid: errorPrefix + '_DIRECTORY_OWNER_INVALID',
+      directoryPermissionsInvalid: errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID',
+      parentInvalid: errorPrefix + '_PARENT_UNTRUSTED',
+      parentUntrusted: errorPrefix + '_PARENT_UNTRUSTED'
     }
+    : {};
+  const codes = {
+    directoryInvalid: 'PRIVATE_STORAGE_DIRECTORY_INVALID',
+    directoryOwnerInvalid: 'PRIVATE_STORAGE_DIRECTORY_OWNER_INVALID',
+    directoryPermissionsInvalid: 'PRIVATE_STORAGE_DIRECTORY_PERMISSIONS_INVALID',
+    parentInvalid: 'PRIVATE_STORAGE_PARENT_INVALID',
+    parentUntrusted: 'PRIVATE_STORAGE_PARENT_UNTRUSTED',
+    ...prefixedCodes,
+    ...errorCodes
+  };
+  const requested = path.resolve(directory);
+  const root = path.parse(requested).root;
+  if (requested === root) {
+    fail('Filesystem root cannot be used as private application storage', codes.directoryInvalid);
+  }
+
+  const hasPosixIdentity = process.platform !== 'win32' &&
+    typeof process.getuid === 'function';
+  const serviceUid = hasPosixIdentity ? BigInt(process.getuid()) : null;
+  const trustedOwners = hasPosixIdentity
+    ? (trustedOwnerUids
+      ? new Set([...trustedOwnerUids].map(value => BigInt(value)).concat([0n, serviceUid]))
+      : defaultTrustedOwners(serviceUid))
+    : null;
+
+  // Reject a symlink at the configured leaf, but resolve trusted platform
+  // aliases in its ancestors (notably Android /data/data) before using paths.
+  let leafStats = null;
+  try {
+    leafStats = fs.lstatSync(requested, { bigint: true });
   } catch (error) {
+    if (error.code === 'ENOTDIR') {
+      fail('Private storage ancestor must be a directory', codes.parentInvalid);
+    }
     if (error.code !== 'ENOENT') throw error;
   }
+  if (leafStats?.isSymbolicLink()) {
+    fail('Private application storage leaf must not be a symbolic link', codes.directoryInvalid);
+  }
+  if (leafStats && !leafStats.isDirectory()) {
+    fail('Private application storage path must be a directory', codes.directoryInvalid);
+  }
 
-  // Resolve the nearest existing ancestor first. Descendants are created only
-  // after the complete canonical ancestor chain has passed the trust checks.
+  // Find the nearest existing ancestor. Existing ancestor symlinks are resolved
+  // to their canonical target; no descendant is created through the alias.
   let existing = requested;
   const missing = [];
   while (true) {
     try {
       const stats = fs.lstatSync(existing, { bigint: true });
-      if (!stats.isDirectory() && !stats.isSymbolicLink()) {
-        fail(errorPrefix + '_PARENT_UNTRUSTED', 'Storage ancestor is not a directory');
+      if (stats.isSymbolicLink()) {
+        const followed = fs.statSync(existing, { bigint: true });
+        if (!followed.isDirectory()) {
+          fail('Private storage ancestor symlink must resolve to a directory', codes.parentInvalid);
+        }
+      } else if (!stats.isDirectory()) {
+        fail('Private storage ancestor must be a directory', codes.parentInvalid);
       }
       const canonical = fs.realpathSync(existing);
-      if (!fs.statSync(canonical, { bigint: true }).isDirectory()) {
-        fail(errorPrefix + '_PARENT_UNTRUSTED', 'Canonical storage ancestor is not a directory');
+      const followed = fs.statSync(canonical, { bigint: true });
+      if (!followed.isDirectory()) {
+        fail('Private storage canonical ancestor must be a directory', codes.parentInvalid);
       }
       existing = canonical;
       break;
     } catch (error) {
+      if (error.code === 'ENOTDIR') {
+        fail('Private storage ancestor must be a directory', codes.parentInvalid);
+      }
       if (error.code !== 'ENOENT') throw error;
       const parent = path.dirname(existing);
       if (parent === existing) throw error;
@@ -98,89 +196,101 @@ function ensurePrivateStorageDirectory(directory, {
     }
   }
 
-  const posix = process.platform !== 'win32' && typeof process.getuid === 'function';
-  const serviceUid = posix ? BigInt(process.getuid()) : null;
-  const root = path.parse(existing).root;
-  const components = existing.slice(root.length).split(path.sep).filter(Boolean);
-  let current = root;
-
-  const validateAncestor = candidate => {
+  const validateDirectory = (candidate, isTarget) => {
     const stats = fs.lstatSync(candidate, { bigint: true });
     if (!stats.isDirectory() || stats.isSymbolicLink() ||
         fs.realpathSync(candidate) !== candidate) {
-      fail(errorPrefix + '_PARENT_UNTRUSTED', 'Storage ancestor is not canonical');
-    }
-    if (!posix) return;
-
-    if (stats.uid !== 0n && stats.uid !== serviceUid &&
-        !(process.platform === 'android' && stats.uid === 1000n)) {
-      fail(errorPrefix + '_PARENT_UNTRUSTED', 'Storage ancestor has an untrusted owner');
+      fail('Private storage path contains a non-directory, symlink, or non-canonical component',
+        isTarget ? codes.directoryInvalid : codes.parentInvalid);
     }
 
-    const permissions = stats.mode & 0o7777n;
-    if ((permissions & 0o022n) !== 0n && (permissions & 0o1000n) === 0n &&
-        !androidSystemAncestorAllowed(candidate, stats) &&
-        !androidAppFilesAncestorAllowed(candidate, stats)) {
-      fail(errorPrefix + '_PARENT_UNTRUSTED', 'Storage ancestor is writable by group or other users');
+    if (!hasPosixIdentity) return;
+
+    if (isTarget) {
+      if (stats.uid !== serviceUid) {
+        fail('Private storage directory must be owned by the application user', codes.directoryOwnerInvalid);
+      }
+      if ((stats.mode & 0o7777n) !== BigInt(mode)) {
+        if (!repairPermissions) {
+          fail('Private storage directory must not be accessible by group or other users', codes.directoryPermissionsInvalid);
+        }
+        fs.chmodSync(candidate, mode);
+        const privateStats = fs.lstatSync(candidate, { bigint: true });
+        if (privateStats.uid !== serviceUid || (privateStats.mode & 0o7777n) !== BigInt(mode)) {
+          fail('Private storage directory permissions could not be secured', codes.directoryPermissionsInvalid);
+        }
+      }
+      return;
+    }
+
+    if (!trustedOwners.has(stats.uid)) {
+      fail('Private storage ancestor is not owned by a trusted principal', codes.parentUntrusted);
+    }
+    const ancestorMode = stats.mode & 0o7777n;
+    if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n) {
+      const systemAncestorTrusted = isTrustedAndroidSystemGroupAncestor(candidate, stats, {
+        platform: process.platform,
+        processGid: process.getgid(),
+        supplementaryGroups: process.getgroups()
+      });
+      let appFilesAncestorTrusted = false;
+      if (process.platform === 'android' &&
+          path.basename(candidate) === 'files' &&
+          typeof process.getuid === 'function' &&
+          typeof process.getgid === 'function') {
+        const parentPath = path.dirname(candidate);
+        const parentStats = fs.lstatSync(parentPath, { bigint: true });
+        appFilesAncestorTrusted = isTrustedAndroidAppFilesAncestor(candidate, stats, {
+          platform: process.platform,
+          processUid: process.getuid(),
+          processGid: process.getgid(),
+          parentPath,
+          parentStats
+        });
+      }
+      if (!systemAncestorTrusted && !appFilesAncestorTrusted) {
+        fail('Private storage ancestor is writable by group or other users without sticky-bit protection', codes.parentUntrusted);
+      }
     }
   };
 
-  validateAncestor(current);
-  for (const component of components) {
+  // Validate the complete canonical ancestor chain before creating descendants.
+  const existingRoot = path.parse(existing).root;
+  const existingComponents = existing.slice(existingRoot.length).split(path.sep).filter(Boolean);
+  let current = existingRoot;
+  validateDirectory(current, false);
+  for (const component of existingComponents) {
     current = path.join(current, component);
     const isTarget = missing.length === 0 && current === existing;
-    if (isTarget) break;
-    validateAncestor(current);
+    validateDirectory(current, isTarget);
   }
 
-  if (missing.length === 0) {
-    const target = fs.lstatSync(existing, { bigint: true });
-    if (!target.isDirectory() || target.isSymbolicLink() || (posix && target.uid !== serviceUid)) {
-      fail(errorPrefix + '_DIRECTORY_OWNER_INVALID', 'Storage directory must be owned by the application user');
-    }
-    if (posix && (target.mode & 0o7777n) !== BigInt(mode)) {
-      if (!repairPermissions) {
-        fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions are not private');
-      }
-      fs.chmodSync(existing, mode);
-      const repaired = fs.lstatSync(existing, { bigint: true });
-      if (repaired.uid !== serviceUid || (repaired.mode & 0o7777n) !== BigInt(mode)) {
-        fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions could not be secured');
-      }
-    }
-    return existing;
-  }
+  // Read-only validation must not create storage as a side effect. Return the
+  // canonical prospective path after validating every existing ancestor.
+  if (!create) return path.join(existing, ...missing);
 
+  // Create missing components one at a time beneath the validated canonical
+  // parent, then validate each newly created or concurrently created directory.
   for (let index = 0; index < missing.length; index += 1) {
     const next = path.join(current, missing[index]);
-    let created = false;
     try {
       fs.mkdirSync(next, { mode });
-      created = true;
+      syncDirectory(current);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
-
-    const stats = fs.lstatSync(next, { bigint: true });
-    if (!stats.isDirectory() || stats.isSymbolicLink() || fs.realpathSync(next) !== next) {
-      fail(errorPrefix + '_DIRECTORY_INVALID', 'Created storage path is not a canonical directory');
-    }
-    if (posix && stats.uid !== serviceUid) {
-      fail(errorPrefix + '_DIRECTORY_OWNER_INVALID', 'Created storage directory has an unexpected owner');
-    }
-    if (posix && (stats.mode & 0o7777n) !== BigInt(mode)) {
-      if (!created && !repairPermissions) {
-        fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions are not private');
-      }
-      fs.chmodSync(next, mode);
-      const secured = fs.lstatSync(next, { bigint: true });
-      if (secured.uid !== serviceUid || (secured.mode & 0o7777n) !== BigInt(mode)) {
-        fail(errorPrefix + '_DIRECTORY_PERMISSIONS_INVALID', 'Storage directory permissions could not be secured');
-      }
-    }
+    const isTarget = index === missing.length - 1;
+    validateDirectory(next, isTarget);
     current = next;
+  }
+
+  if (missing.length === 0 && current !== existing) {
+    fail('Private storage directory resolution did not reach its canonical target', codes.directoryInvalid);
   }
   return current;
 }
 
 module.exports = ensurePrivateStorageDirectory;
+
+module.exports.isTrustedAndroidSystemGroupAncestor = isTrustedAndroidSystemGroupAncestor;
+module.exports.isTrustedAndroidAppFilesAncestor = isTrustedAndroidAppFilesAncestor;

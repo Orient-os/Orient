@@ -24,14 +24,20 @@ function inspectPrivateFile(filePath, { create = false } = {}) {
       }
     }
 
+    const pathStats = fs.lstatSync(filePath, { bigint: true });
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() || pathStats.nlink !== 1n) {
+      throw unsafeStorageFile('SQLite storage files must be regular single-link files');
+    }
+
     if (descriptor === undefined) {
       const noFollow = fs.constants.O_NOFOLLOW || 0;
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
     }
 
     const stats = fs.fstatSync(descriptor, { bigint: true });
-    if (!stats.isFile() || stats.nlink !== 1n) {
-      throw unsafeStorageFile('SQLite storage files must be regular single-link files');
+    if (!stats.isFile() || stats.nlink !== 1n ||
+        stats.dev !== pathStats.dev || stats.ino !== pathStats.ino) {
+      throw unsafeStorageFile('SQLite storage file changed during descriptor validation');
     }
 
     if (process.platform !== 'win32' && typeof process.getuid === 'function') {

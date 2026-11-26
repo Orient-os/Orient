@@ -336,6 +336,7 @@ class ProjectOperationReceiptStore {
       fail('Project operation receipt lock could not be acquired', 'PROJECT_OPERATION_RECEIPT_LOCKED');
     }
 
+    let operationError;
     try {
       const existing = this.read({ operationId, tenantId });
       if (existing) {
@@ -383,6 +384,9 @@ class ProjectOperationReceiptStore {
         }
       }
       return receipt;
+    } catch (error) {
+      operationError = error;
+      throw error;
     } finally {
       // The unguessable per-acquisition marker path is the ownership
       // capability. A replacement lock has a different marker name, so this
@@ -391,8 +395,14 @@ class ProjectOperationReceiptStore {
         fs.unlinkSync(ownerPath);
         fs.rmdirSync(lockPath);
         syncDirectory(this.directory);
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
+      } catch (cleanupError) {
+        if (cleanupError.code !== 'ENOENT') {
+          // A cleanup failure must not mask the primary write/commit error.
+          // If the receipt rename already happened, callers can reconcile by
+          // reading the receipt; retain both failures for diagnostics.
+          if (operationError) operationError.cleanupError = cleanupError;
+          else throw cleanupError;
+        }
       }
     }
   }

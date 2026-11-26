@@ -237,6 +237,73 @@ test('approval-required execution is accepted as a durable task and does not ret
 });
 
 
+test('task reconciliation distinguishes an authorized resume from a newer pending approval challenge', async t => {
+  await t.test('an approval authorization supersedes its earlier persisted challenge', async () => {
+    const fixture = createRuntime({
+      status: 'running',
+      execute: async (_goal, options) => {
+        throw Object.assign(new Error('The original approval-required signal raced with resume'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: { executionId: options.executionId }
+        });
+      }
+    });
+    fixture.runtime.getExecutionStatus = async id => ({
+      executionId: id,
+      status: 'running',
+      currentStep: 1,
+      tenantId: 'tenant-test',
+      metadata: {
+        planRevision: 1,
+        pendingStepInputs: { 1: { tool: 'danger.write', operationId: 'operation-1' } }
+      },
+      events: [
+        { type: 'approval.challenge.persisted', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.resume.authorized', data: { step: 1, planRevision: 1, operationId: 'operation-1' } }
+      ]
+    });
+
+    await assert.rejects(
+      fixture.service.createTask({ goal: 'resume an approved task', idempotencyKey: 'approval-resume-authorized-001' }),
+      error => error.code === 'TASK_EXECUTION_IN_PROGRESS'
+    );
+    assert.equal(fixture.executions, 1, 'a resumed active execution must not be redispatched');
+  });
+
+  await t.test('a later approval challenge remains pending after an earlier authorization', async () => {
+    const fixture = createRuntime({
+      status: 'running',
+      execute: async (_goal, options) => {
+        throw Object.assign(new Error('A new approval is required'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: { executionId: options.executionId }
+        });
+      }
+    });
+    fixture.runtime.getExecutionStatus = async id => ({
+      executionId: id,
+      status: 'running',
+      currentStep: 2,
+      tenantId: 'tenant-test',
+      metadata: {
+        planRevision: 1,
+        pendingStepInputs: { 2: { tool: 'danger.publish', operationId: 'operation-2' } }
+      },
+      events: [
+        { type: 'approval.challenge.persisted', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.resume.authorized', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.challenge.persisted', data: { step: 2, planRevision: 1, operationId: 'operation-2' } }
+      ]
+    });
+
+    const result = await fixture.service.createTask({
+      goal: 'resume and request a second approval',
+      idempotencyKey: 'approval-resume-next-challenge-001'
+    });
+    assert.equal(result.task.status, 'awaiting_approval');
+  });
+});
+
 test('task idempotency keys are isolated between owners in the same tenant', async () => {
   const fixture = createRuntime();
   const first = await fixture.service.createTask({

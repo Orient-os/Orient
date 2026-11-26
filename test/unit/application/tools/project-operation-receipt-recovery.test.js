@@ -435,6 +435,7 @@ test('receipt writes accept a payload exactly at the maximum byte limit', async 
       recordedAt: new Date().toISOString(),
       result: input.result
     };
+    baseReceipt.result.note = '';
     const paddingBytes = 1024 * 1024 -
       Buffer.byteLength(JSON.stringify(baseReceipt) + '\n', 'utf8');
     input.result.note = 'x'.repeat(paddingBytes);

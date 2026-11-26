@@ -1015,3 +1015,175 @@ test('restored checkpoints cannot cross owner or tenant boundaries before durabl
     expectedQuotaInputChecks: 1
   });
 });
+
+
+function createPendingApprovalResumeFixture({
+  runningStepMutation = null,
+  approvalRecord = null,
+  reusableApprovalRecord = null
+} = {}) {
+  const ExecutionContext = require('../../../../src/core/execution/execution-context');
+  const context = new ExecutionContext({
+    requestId: 'request-pending-approval',
+    input: 'resume guarded write',
+    executionId: 'execution-pending-approval',
+    tenantId: 'tenant-a'
+  });
+  context.start();
+  context.transitionAgentTo(AgentState.LIFECYCLE.PLANNING);
+  context.transitionAgentTo(AgentState.LIFECYCLE.VALIDATING);
+  context.setPlan({
+    intent: 'test.pending-approval-resume',
+    steps: [{ step: 1, tool: 'danger.write', input: {}, dependsOn: null }]
+  });
+  context.metadata.planRevision = 1;
+  context.metadata.pendingStepInputs = { 1: { approvalRequired: true } };
+  context.transitionAgentTo(AgentState.LIFECYCLE.EXECUTING);
+  if (runningStepMutation) {
+    context.startStep({ step: 1, tool: 'danger.write', planRevision: 1 });
+    runningStepMutation(context.steps[0]);
+  }
+
+  const calls = {
+    runArgs: null,
+    approvalLookup: null,
+    reusableLookup: null,
+    leaseReleases: 0
+  };
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {},
+    agentExecutionCoordinator: {
+      run: async args => {
+        calls.runArgs = args;
+        // AgentExecutionCoordinator owns the post-loop lifecycle transitions.
+        // This fixture replaces it, so reproduce the same terminal path before
+        // RequestExecutionCoordinator commits the completed execution.
+        args.context.transitionAgentTo(AgentState.LIFECYCLE.OBSERVING);
+        args.context.transitionAgentTo(AgentState.LIFECYCLE.EVALUATING);
+        return {
+          loopResult: { result: { ok: true }, evaluation: { success: true } },
+          replanningDecision: { toJSON: () => ({ outcome: 'done' }) }
+        };
+      }
+    },
+    recoveryCoordinator: {
+      fail: async () => { throw new Error('approval-gated resume must not enter failure recovery'); }
+    },
+    persistence: {
+      executions: { findById: async () => null },
+      checkpoints: {
+        findLatest: async () => ({
+          checkpointId: 'checkpoint-pending-approval',
+          sequence: 3,
+          snapshot: context.snapshot(),
+          snapshotSha256: null
+        }),
+        acquireResumeLease: async () => ({ leaseId: 'lease-pending-approval' }),
+        renewResumeLease: async () => ({ leaseId: 'lease-pending-approval' }),
+        releaseResumeLease: async () => { calls.leaseReleases += 1; }
+      }
+    },
+    persistenceCoordinator: {
+      persistExecution: async () => ({ status: 'completed' }),
+      persistEvents: async () => {},
+      checkpoint: async () => {}
+    },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    approvalService: {
+      getApprovedForExecution: async request => {
+        calls.approvalLookup = request;
+        return approvalRecord;
+      },
+      findReusable: async request => {
+        calls.reusableLookup = request;
+        return reusableApprovalRecord;
+      }
+    },
+    tenantId: 'tenant-a',
+    userId: 'owner-a',
+    workspaceId: 'workspace-a',
+    maxInputChars: 1000
+  });
+
+  return { coordinator, calls };
+}
+
+test('pending approval bypass applies only to the exact already-running step identity', async () => {
+  const mismatches = [
+    ['status', step => { step.status = 'pending'; }],
+    ['step number', step => { step.step = 2; }],
+    ['plan revision', step => { step.planRevision = 2; }],
+    ['tool identity', step => { step.tool = 'other.write'; }]
+  ];
+
+  for (const [label, mutate] of mismatches) {
+    const { coordinator, calls } = createPendingApprovalResumeFixture({
+      runningStepMutation: mutate
+    });
+    await assert.rejects(
+      coordinator.resume('execution-pending-approval'),
+      error => error.code === 'APPROVAL_NOT_APPROVED',
+      label
+    );
+    assert.equal(calls.runArgs, null, label + ': mismatched running step must never reach the agent execution loop');
+    assert.equal(calls.leaseReleases, 1, label + ': fail-closed rejection must release the resume lease');
+  }
+
+  const exact = createPendingApprovalResumeFixture({ runningStepMutation: () => {} });
+  const result = await exact.coordinator.resume('execution-pending-approval');
+  assert.equal(result.resumed, true);
+  assert.ok(exact.calls.runArgs, 'the exact in-flight operation is delegated to the agent loop for idempotency reconciliation');
+  assert.equal(exact.calls.runArgs.approval, null);
+  assert.equal(exact.calls.leaseReleases, 1);
+});
+
+test('resume recovers only a reusable durable approval scoped to the pending execution step', async () => {
+  const reusableApprovalRecord = {
+    approvalId: 'approval-reusable',
+    executionId: 'execution-pending-approval',
+    tenantId: 'tenant-a',
+    step: 1,
+    tool: 'danger.write',
+    planRevision: 1,
+    decision: 'approved',
+    status: 'approved'
+  };
+  const { coordinator, calls } = createPendingApprovalResumeFixture({
+    reusableApprovalRecord
+  });
+
+  const result = await coordinator.resume('execution-pending-approval');
+
+  assert.equal(result.resumed, true);
+  assert.deepEqual(calls.reusableLookup, {
+    executionId: 'execution-pending-approval',
+    step: 1,
+    tool: 'danger.write',
+    planRevision: 1,
+    tenantId: 'tenant-a'
+  });
+  assert.equal(calls.runArgs.approval.approvalId, 'approval-reusable');
+  assert.equal(calls.leaseReleases, 1);
+});
+
+test('resume requires a durable approved decision for an explicit approval reference', async () => {
+  const approvalRecord = {
+    approvalId: 'approval-durable',
+    executionId: 'execution-pending-approval',
+    tenantId: 'tenant-a',
+    decision: 'approved',
+    status: 'approved'
+  };
+  const { coordinator, calls } = createPendingApprovalResumeFixture({ approvalRecord });
+  const result = await coordinator.resume('execution-pending-approval', {
+    approval: { approvalId: 'approval-durable' }
+  });
+
+  assert.equal(result.resumed, true);
+  assert.equal(calls.approvalLookup.approvalId, 'approval-durable');
+  assert.equal(calls.approvalLookup.executionId, 'execution-pending-approval');
+  assert.equal(calls.approvalLookup.tenantId, 'tenant-a');
+  assert.equal(calls.runArgs.approval.approvalId, 'approval-durable');
+  assert.equal(calls.leaseReleases, 1);
+});

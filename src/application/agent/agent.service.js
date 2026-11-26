@@ -22,9 +22,9 @@ function isApprovalPendingExecution(execution) {
 
   const authorizationIndex = events.findLastIndex(event =>
     event?.type === 'approval.resume.authorized' &&
-    Number(event.step) === pendingStep &&
-    Number(event.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
-    (event.operationId || null) === (pendingInput?.operationId || null)
+    Number(event.data?.step) === pendingStep &&
+    Number(event.data?.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
+    (event.data?.operationId || null) === (pendingInput?.operationId || null)
   );
   return execution?.status === 'running' && challengeIndex > authorizationIndex;
 }

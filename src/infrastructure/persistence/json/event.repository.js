@@ -2,8 +2,36 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
+const ensurePrivateStorageDirectory = require('../../filesystem/private-storage-directory');
 
 const MAX_EVENT_FILE_BYTES = 64 * 1024 * 1024;
+const PRIVATE_FILE_MODE = 0o600;
+
+function syncDirectory(directory) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(directory, 'r');
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function validatePrivateEventFile(stats) {
+  if (!stats.isFile() || stats.nlink !== 1n) {
+    fail('Event storage must be a single-link regular file', 'EVENT_STORAGE_CORRUPT');
+  }
+  if (process.platform !== 'win32' && typeof process.getuid === 'function') {
+    if (stats.uid !== BigInt(process.getuid())) {
+      fail('Event storage file must be owned by the application user', 'EVENT_STORAGE_FILE_OWNER_INVALID');
+    }
+    if ((stats.mode & 0o7777n) !== BigInt(PRIVATE_FILE_MODE)) {
+      fail('Event storage file must have private mode 0600', 'EVENT_STORAGE_FILE_PERMISSIONS_INVALID');
+    }
+  }
+}
 
 function fail(message, code) { const error = new Error(message); error.code = code; throw error; }
 
@@ -32,49 +60,59 @@ class EventRepository {
   }
 
   ensureStorage() {
-    if (typeof fs.constants.O_NOFOLLOW !== 'number') fail('Safe JSON event storage is unsupported on this platform', 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    // Reject a symlink at the configured directory itself before resolving
-    // platform aliases in its ancestors (notably Android /data/data).
-    const configuredDirectoryStats = fs.lstatSync(this.directory, { bigint: true });
-    if (!configuredDirectoryStats.isDirectory() || configuredDirectoryStats.isSymbolicLink()) {
-      fail('JSON event storage directory must not be a symbolic link', 'EVENT_STORAGE_DIRECTORY_INVALID');
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+      fail('Safe JSON event storage is unsupported on this platform', 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
     }
-    // Normalize trusted platform aliases once before deriving file/lock paths.
-    this.directory = fs.realpathSync(this.directory);
+
+    this.directory = ensurePrivateStorageDirectory(this.directory, {
+      mode: 0o700,
+      repairPermissions: true,
+      errorCodes: {
+        directoryInvalid: 'EVENT_STORAGE_DIRECTORY_INVALID',
+        directoryOwnerInvalid: 'EVENT_STORAGE_DIRECTORY_OWNER_INVALID',
+        directoryPermissionsInvalid: 'EVENT_STORAGE_DIRECTORY_PERMISSIONS_INVALID',
+        parentInvalid: 'EVENT_STORAGE_DIRECTORY_INVALID',
+        parentUntrusted: 'EVENT_STORAGE_PARENT_UNTRUSTED'
+      }
+    });
     this.filePath = path.join(this.directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
-    const directoryStats = fs.lstatSync(this.directory, { bigint: true });
-    const parentDirectory = path.dirname(this.directory);
-    const parentStats = fs.lstatSync(parentDirectory, { bigint: true });
-    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() ||
-        !parentStats.isDirectory() || parentStats.isSymbolicLink() ||
-        fs.realpathSync(this.directory) !== this.directory ||
-        fs.realpathSync(parentDirectory) !== parentDirectory) {
-      fail('JSON event storage directory must be a real canonical directory', 'EVENT_STORAGE_DIRECTORY_INVALID');
-    }
-    if (process.platform !== 'win32' && typeof process.getuid === 'function') {
-      if (directoryStats.uid !== BigInt(process.getuid())) fail('JSON event storage directory must be owned by the application user', 'EVENT_STORAGE_DIRECTORY_OWNER_INVALID');
-      const parentMode = parentStats.mode & 0o7777n;
-      if ((parentMode & 0o022n) !== 0n && (parentMode & 0o1000n) === 0n) fail('JSON event storage parent is writable by other users without sticky-bit protection', 'EVENT_STORAGE_PARENT_UNTRUSTED');
-      // Tighten an existing service-owned directory instead of breaking a
-      // local JSON setup created earlier with a permissive umask.
-      if ((directoryStats.mode & 0o077n) !== 0n) fs.chmodSync(this.directory, 0o700);
-      const privateStats = fs.lstatSync(this.directory, { bigint: true });
-      if ((privateStats.mode & 0o077n) !== 0n) fail('JSON event storage directory must be private (mode 0700)', 'EVENT_STORAGE_DIRECTORY_PERMISSIONS_INVALID');
-    }
+
     try {
-      const fd = fs.openSync(this.filePath, 'wx', 0o600);
-      try { fs.writeFileSync(fd, '[]\n', 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    } catch (error) { if (error.code !== 'EEXIST') throw error; }
+      const descriptor = fs.openSync(this.filePath, 'wx', PRIVATE_FILE_MODE);
+      try {
+        fs.writeFileSync(descriptor, '[]\\n', 'utf8');
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      syncDirectory(this.directory);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+
+    let descriptor;
+    try {
+      descriptor = fs.openSync(this.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      validatePrivateEventFile(fs.fstatSync(descriptor, { bigint: true }));
+    } catch (error) {
+      if (error.code === 'ELOOP') {
+        fail('Event storage must not be a symbolic link', 'EVENT_STORAGE_CORRUPT');
+      }
+      throw error;
+    } finally {
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+    }
   }
 
   read() {
     let descriptor;
     try {
       descriptor = fs.openSync(this.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-      const stats = fs.fstatSync(descriptor);
-      if (!stats.isFile()) fail('Event storage must be a regular file', 'EVENT_STORAGE_CORRUPT');
+      const stats = fs.fstatSync(descriptor, { bigint: true });
+      validatePrivateEventFile(stats);
       if (stats.size > MAX_EVENT_FILE_BYTES) fail('Event storage exceeds its maximum permitted size', 'EVENT_STORAGE_TOO_LARGE');
       const raw = readBoundedFile(descriptor, MAX_EVENT_FILE_BYTES);
       if (!raw.trim()) return [];
@@ -90,20 +128,42 @@ class EventRepository {
   }
 
   write(events) {
+    const serialized = Buffer.from(JSON.stringify(events, null, 2) + '\\n', 'utf8');
+    if (serialized.length > MAX_EVENT_FILE_BYTES) {
+      fail('Event storage exceeds its maximum permitted size', 'EVENT_STORAGE_TOO_LARGE');
+    }
+
     const temporaryFile = this.filePath + '.tmp.' + crypto.randomUUID();
     let descriptor;
     let created = false;
+    let renamed = false;
     try {
-      descriptor = fs.openSync(temporaryFile, 'wx', 0o600);
+      descriptor = fs.openSync(temporaryFile, 'wx', PRIVATE_FILE_MODE);
       created = true;
-      fs.writeFileSync(descriptor, JSON.stringify(events, null, 2) + '\n', 'utf8');
+      fs.writeFileSync(descriptor, serialized);
       fs.fsyncSync(descriptor);
       fs.closeSync(descriptor);
       descriptor = undefined;
       fs.renameSync(temporaryFile, this.filePath);
+      renamed = true;
+      syncDirectory(this.directory);
     } catch (error) {
-      if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} }
-      if (created) { try { fs.unlinkSync(temporaryFile); } catch {} }
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch (cleanupError) {
+          error.cleanupErrors = [...(error.cleanupErrors || []), cleanupError];
+        }
+      }
+      if (created && !renamed) {
+        try { fs.unlinkSync(temporaryFile); } catch (cleanupError) {
+          if (cleanupError.code !== 'ENOENT') {
+            error.cleanupErrors = [...(error.cleanupErrors || []), cleanupError];
+          }
+        }
+      }
+      if (renamed) {
+        error.code = error.code || 'EVENT_STORAGE_DURABILITY_UNCERTAIN';
+        error.durabilityUncertain = true;
+      }
       throw error;
     }
   }

@@ -1049,3 +1049,41 @@ test('receipt reads reject hard-linked receipt evidence', async t => {
     error => error.code === 'PROJECT_OPERATION_RECEIPT_CORRUPT'
   );
 });
+
+
+test('receipt commit ambiguity preserves the primary durability error and remains safely reconcilable', async () => {
+  await withFixture(async ({ store }) => {
+    const input = receiptInput('receipt-directory-fsync-ambiguity');
+    const originalFsyncSync = fsSync.fsyncSync;
+    let directorySyncCount = 0;
+    const commitError = Object.assign(new Error('receipt directory sync failed'), { code: 'EIO' });
+    const cleanupError = Object.assign(new Error('lock cleanup directory sync failed'), { code: 'EIO' });
+
+    fsSync.fsyncSync = function (fd) {
+      if (fsSync.fstatSync(fd).isDirectory()) {
+        directorySyncCount += 1;
+        if (directorySyncCount === 2) throw commitError;
+        if (directorySyncCount === 3) throw cleanupError;
+      }
+      return originalFsyncSync.call(this, fd);
+    };
+
+    try {
+      assert.throws(
+        () => store.write(input),
+        error => error === commitError &&
+          error.code === 'EIO' &&
+          error.cleanupError === cleanupError
+      );
+    } finally {
+      fsSync.fsyncSync = originalFsyncSync;
+    }
+
+    // rename completed before the directory fsync failed. The visible receipt
+    // is authoritative for retry/reconciliation, preventing a second mutation.
+    assert.equal(store.read(input).operationId, input.operationId);
+    assert.equal(directorySyncCount, 3);
+    assert.doesNotThrow(() => store.write(input), 'retry must return the existing receipt');
+    assert.equal(fsSync.existsSync(store.receiptPath(input.operationId, input.tenantId) + '.lock'), false);
+  });
+});

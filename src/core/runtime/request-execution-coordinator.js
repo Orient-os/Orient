@@ -681,7 +681,6 @@ class RequestExecutionCoordinator {
         // prevents task reconciliation from mistaking a resumed execution for
         // one that is still waiting on the original approval challenge.
         await this.persistenceCoordinator.checkpoint(context, 'update', 'approval_resume_authorized', persistencePrincipal);
-        await this.persistenceCoordinator.persistEvents(context, persistencePrincipal);
       }
 
       if (resumeLease?.leaseId && typeof this.persistence.checkpoints.renewResumeLease !== 'function') {

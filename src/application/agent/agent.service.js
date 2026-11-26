@@ -14,9 +14,9 @@ function isApprovalPendingExecution(execution) {
   const events = Array.isArray(execution?.events) ? execution.events : [];
   const challengeIndex = events.findLastIndex(event =>
     event?.type === 'approval.challenge.persisted' &&
-    Number(event.step) === pendingStep &&
-    Number(event.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
-    (event.operationId || null) === (pendingInput?.operationId || null)
+    Number(event.data?.step) === pendingStep &&
+    Number(event.data?.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
+    (event.data?.operationId || null) === (pendingInput?.operationId || null)
   );
   if (challengeIndex < 0) return false;
 

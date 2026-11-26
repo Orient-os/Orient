@@ -4,29 +4,34 @@ const { assertPersistencePrincipal } = require('../../core/security/persistence-
 function isApprovalPendingExecution(execution) {
   const pendingSteps = execution?.metadata?.pendingStepInputs;
   if (!pendingSteps || typeof pendingSteps !== 'object' || Array.isArray(pendingSteps)) return false;
-  const pendingStep = Object.keys(pendingSteps)
-    .map(Number)
-    .filter(Number.isInteger)
-    .sort((a, b) => a - b)[0];
-  if (!pendingStep) return false;
 
-  const pendingInput = pendingSteps[pendingStep];
   const events = Array.isArray(execution?.events) ? execution.events : [];
-  const challengeIndex = events.findLastIndex(event =>
-    event?.type === 'approval.challenge.persisted' &&
-    Number(event.data?.step) === pendingStep &&
-    Number(event.data?.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
-    (event.data?.operationId || null) === (pendingInput?.operationId || null)
-  );
-  if (challengeIndex < 0) return false;
+  const stepNumbers = Object.keys(pendingSteps)
+    .map(Number)
+    .filter(step => Number.isInteger(step) && step > 0)
+    .sort((a, b) => a - b);
 
-  const authorizationIndex = events.findLastIndex(event =>
-    event?.type === 'approval.resume.authorized' &&
-    Number(event.data?.step) === pendingStep &&
-    Number(event.data?.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
-    (event.data?.operationId || null) === (pendingInput?.operationId || null)
-  );
-  return execution?.status === 'running' && challengeIndex > authorizationIndex;
+  for (const pendingStep of stepNumbers) {
+    const pendingInput = pendingSteps[pendingStep];
+    const planRevision = Number(execution?.metadata?.planRevision || 1);
+    const challengeIndex = events.findLastIndex(event =>
+      event?.type === 'approval.challenge.persisted' &&
+      Number(event.data?.step) === pendingStep &&
+      Number(event.data?.planRevision || 1) === planRevision &&
+      (event.data?.operationId || null) === (pendingInput?.operationId || null)
+    );
+    if (challengeIndex < 0) continue;
+
+    const authorizationIndex = events.findLastIndex(event =>
+      event?.type === 'approval.resume.authorized' &&
+      Number(event.data?.step) === pendingStep &&
+      Number(event.data?.planRevision || 1) === planRevision &&
+      (event.data?.operationId || null) === (pendingInput?.operationId || null)
+    );
+    if (challengeIndex > authorizationIndex) return execution?.status === 'running';
+  }
+
+  return false;
 }
 
 function isTaskCreationSettled(execution, approvalPending = false) {

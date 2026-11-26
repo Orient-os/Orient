@@ -436,12 +436,12 @@ test('receipt writes accept a payload exactly at the maximum byte limit', async 
       result: input.result
     };
     const paddingBytes = 1024 * 1024 -
-      Buffer.byteLength(JSON.stringify(baseReceipt) + '\\n', 'utf8');
+      Buffer.byteLength(JSON.stringify(baseReceipt) + '\n', 'utf8');
     input.result.note = 'x'.repeat(paddingBytes);
 
     const receipt = store.write(input);
     assert.equal(
-      Buffer.byteLength(JSON.stringify(receipt) + '\\n', 'utf8'),
+      Buffer.byteLength(JSON.stringify(receipt) + '\n', 'utf8'),
       1024 * 1024
     );
     assert.deepEqual(store.read(input), receipt);

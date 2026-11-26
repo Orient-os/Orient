@@ -287,7 +287,10 @@ test('task reconciliation distinguishes an authorized resume from a newer pendin
       tenantId: 'tenant-test',
       metadata: {
         planRevision: 1,
-        pendingStepInputs: { 2: { tool: 'danger.publish', operationId: 'operation-2' } }
+        pendingStepInputs: {
+          1: { tool: 'danger.write', operationId: 'operation-1' },
+          2: { tool: 'danger.publish', operationId: 'operation-2' }
+        }
       },
       events: [
         { type: 'approval.challenge.persisted', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },

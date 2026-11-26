@@ -354,13 +354,17 @@ class ProjectOperationReceiptStore {
         recordedAt: new Date().toISOString(),
         result
       };
+      const serialized = JSON.stringify(receipt) + '\n';
+      if (Buffer.byteLength(serialized, 'utf8') > MAX_RECEIPT_BYTES) {
+        fail('Project operation receipt exceeds its maximum permitted size', 'PROJECT_OPERATION_RECEIPT_CORRUPT');
+      }
       const temporary = filePath + '.tmp.' + token;
       let fd;
       let temporaryCreated = false;
       try {
         fd = fs.openSync(temporary, 'wx', 0o600);
         temporaryCreated = true;
-        fs.writeFileSync(fd, JSON.stringify(receipt) + '\n', 'utf8');
+        fs.writeFileSync(fd, serialized, 'utf8');
         fs.fsyncSync(fd);
         fs.closeSync(fd);
         fd = undefined;

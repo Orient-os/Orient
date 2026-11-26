@@ -407,6 +407,47 @@ test('legacy or stale lock paths fail closed and are never renamed or removed', 
   });
 });
 
+test('receipt writes reject oversized UTF-8 payloads before creating receipt files', async () => {
+  await withFixture(async ({ store }) => {
+    const input = receiptInput('oversized-receipt-write');
+    input.result.note = 'é'.repeat(1024 * 1024);
+
+    assert.throws(
+      () => store.write(input),
+      error => error?.code === 'PROJECT_OPERATION_RECEIPT_CORRUPT'
+    );
+
+    const receiptPath = store.receiptPath(input.operationId, input.tenantId);
+    assert.equal(fsSync.existsSync(receiptPath), false);
+    assert.deepEqual(fsSync.readdirSync(store.directory), []);
+  });
+});
+
+test('receipt writes accept a payload exactly at the maximum byte limit', async () => {
+  await withFixture(async ({ store }) => {
+    const input = receiptInput('maximum-sized-receipt-write');
+    const baseReceipt = {
+      version: 1,
+      operationId: input.operationId,
+      tenantId: input.tenantId,
+      workspaceId: input.workspaceId,
+      changeSetHash: input.changeSetHash,
+      recordedAt: new Date().toISOString(),
+      result: input.result
+    };
+    const paddingBytes = 1024 * 1024 -
+      Buffer.byteLength(JSON.stringify(baseReceipt) + '\\n', 'utf8');
+    input.result.note = 'x'.repeat(paddingBytes);
+
+    const receipt = store.write(input);
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(receipt) + '\\n', 'utf8'),
+      1024 * 1024
+    );
+    assert.deepEqual(store.read(input), receipt);
+  });
+});
+
 test('successful receipt writes release only their owned directory lock', async () => {
   await withFixture(async ({ store }) => {
     const context = { operationId: 'directory-lock-release', tenantId: 'tenant-a' };

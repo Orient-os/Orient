@@ -1,14 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const createPersistence = require('../../../src/infrastructure/persistence/persistence-factory');
 
-test('persistence factory defaults to local JSON without database configuration', async () => {
+test('persistence factory defaults to local JSON without database configuration', async t => {
+  const agentDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-test-data-'));
+  t.after(() => fs.rmSync(agentDataDirectory, { recursive: true, force: true }));
+
   const runtime = createPersistence({
     persistenceMode: 'json',
-    agentDataDirectory: path.join(os.tmpdir(), 'orient-test-data')
+    agentDataDirectory
   });
 
   assert.equal(runtime.adapter.health().adapter, 'json');

@@ -8,6 +8,7 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
   const records = new Map();
   const durableExecutions = new Map();
   let executions = 0;
+  let currentStatus = status;
   const idempotency = {
     async findByKey(key) {
       return records.get(key) || null;
@@ -64,7 +65,7 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
       }
       return {
         executionId: id,
-        status,
+        status: currentStatus,
         currentStep: 2,
         startedAt: '2026-10-10T10:00:00.000Z',
         updatedAt: '2026-10-10T10:00:02.000Z',
@@ -75,7 +76,13 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
       };
     }
   };
-  return { service: new AgentService(runtime), runtime, records, get executions() { return executions; } };
+  return {
+    service: new AgentService(runtime),
+    runtime,
+    records,
+    setStatus(nextStatus) { currentStatus = nextStatus; },
+    get executions() { return executions; }
+  };
 }
 
 test('unified task creation is durably idempotent and returns a sanitized task summary', async () => {
@@ -173,6 +180,34 @@ test('ambiguous runtime failure retains the reserved execution identity for safe
 });
 
 
+test('a stale approval-required signal cannot override a terminal durable execution state', async t => {
+  for (const terminalStatus of ['completed', 'failed', 'cancelled']) {
+    await t.test(terminalStatus, async () => {
+      let setStatus;
+      const fixture = createRuntime({
+        status: 'awaiting_approval',
+        execute: async (_goal, options) => {
+          setStatus(terminalStatus);
+          throw Object.assign(new Error('Owner approval was required before the concurrent terminal transition'), {
+            code: 'APPROVAL_REQUIRED',
+            executionContext: { executionId: options.executionId }
+          });
+        }
+      });
+      setStatus = fixture.setStatus;
+
+      const result = await fixture.service.createTask({
+        goal: 'run a task with a concurrent approval resolution',
+        idempotencyKey: 'approval-terminal-race-' + terminalStatus + '-001'
+      });
+
+      assert.equal(result.task.status, terminalStatus);
+      assert.equal(result.replayed, false);
+      assert.equal(fixture.executions, 1);
+    });
+  }
+});
+
 test('approval-required execution is accepted as a durable task and does not retry the high-risk action', async () => {
   const fixture = createRuntime({
     status: 'awaiting_approval',
@@ -201,6 +236,76 @@ test('approval-required execution is accepted as a durable task and does not ret
   assert.equal(fixture.executions, 1);
 });
 
+
+test('task reconciliation distinguishes an authorized resume from a newer pending approval challenge', async t => {
+  await t.test('an approval authorization supersedes its earlier persisted challenge', async () => {
+    const fixture = createRuntime({
+      status: 'running',
+      execute: async (_goal, options) => {
+        throw Object.assign(new Error('The original approval-required signal raced with resume'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: { executionId: options.executionId }
+        });
+      }
+    });
+    fixture.runtime.getExecutionStatus = async id => ({
+      executionId: id,
+      status: 'running',
+      currentStep: 1,
+      tenantId: 'tenant-test',
+      metadata: {
+        planRevision: 1,
+        pendingStepInputs: { 1: { tool: 'danger.write', operationId: 'operation-1' } }
+      },
+      events: [
+        { type: 'approval.challenge.persisted', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.resume.authorized', data: { step: 1, planRevision: 1, operationId: 'operation-1' } }
+      ]
+    });
+
+    await assert.rejects(
+      fixture.service.createTask({ goal: 'resume an approved task', idempotencyKey: 'approval-resume-authorized-001' }),
+      error => error.code === 'TASK_EXECUTION_IN_PROGRESS'
+    );
+    assert.equal(fixture.executions, 1, 'a resumed active execution must not be redispatched');
+  });
+
+  await t.test('a later approval challenge remains pending after an earlier authorization', async () => {
+    const fixture = createRuntime({
+      status: 'running',
+      execute: async (_goal, options) => {
+        throw Object.assign(new Error('A new approval is required'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: { executionId: options.executionId }
+        });
+      }
+    });
+    fixture.runtime.getExecutionStatus = async id => ({
+      executionId: id,
+      status: 'running',
+      currentStep: 2,
+      tenantId: 'tenant-test',
+      metadata: {
+        planRevision: 1,
+        pendingStepInputs: {
+          1: { tool: 'danger.write', operationId: 'operation-1' },
+          2: { tool: 'danger.publish', operationId: 'operation-2' }
+        }
+      },
+      events: [
+        { type: 'approval.challenge.persisted', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.resume.authorized', data: { step: 1, planRevision: 1, operationId: 'operation-1' } },
+        { type: 'approval.challenge.persisted', data: { step: 2, planRevision: 1, operationId: 'operation-2' } }
+      ]
+    });
+
+    const result = await fixture.service.createTask({
+      goal: 'resume and request a second approval',
+      idempotencyKey: 'approval-resume-next-challenge-001'
+    });
+    assert.equal(result.task.status, 'awaiting_approval');
+  });
+});
 
 test('task idempotency keys are isolated between owners in the same tenant', async () => {
   const fixture = createRuntime();

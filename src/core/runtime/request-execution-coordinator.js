@@ -669,6 +669,20 @@ class RequestExecutionCoordinator {
         ? { approvalId: durableApproval.approvalId }
         : null;
 
+      if (pendingStep && (durableApproval || pendingOperationAlreadyStarted)) {
+        context.record('approval.resume.authorized', {
+          step: pendingStep,
+          planRevision,
+          operationId: pending?.[pendingStep]?.operationId || null,
+          approvalId: durableApproval?.approvalId || null,
+          source: durableApproval ? 'durable_approved_decision_store' : 'started_operation_reconciliation'
+        });
+        // Persist the authorization transition before entering AgentLoop. This
+        // prevents task reconciliation from mistaking a resumed execution for
+        // one that is still waiting on the original approval challenge.
+        await this.persistenceCoordinator.checkpoint(context, 'update', 'approval_resume_authorized', persistencePrincipal);
+      }
+
       if (resumeLease?.leaseId && typeof this.persistence.checkpoints.renewResumeLease !== 'function') {
         throw Object.assign(new Error('Durable resume lease renewal is required for safe execution'), {
           code: 'CHECKPOINT_RESUME_LEASE_RENEWAL_UNSUPPORTED'

@@ -3,11 +3,35 @@ const { assertPersistencePrincipal } = require('../../core/security/persistence-
 
 function isApprovalPendingExecution(execution) {
   const pendingSteps = execution?.metadata?.pendingStepInputs;
-  const hasPendingSteps = pendingSteps && typeof pendingSteps === 'object' &&
-    !Array.isArray(pendingSteps) && Object.keys(pendingSteps).length > 0;
-  const hasApprovalChallenge = Array.isArray(execution?.events) &&
-    execution.events.some(event => event?.type === 'approval.challenge.persisted');
-  return execution?.status === 'running' && hasPendingSteps && hasApprovalChallenge;
+  if (!pendingSteps || typeof pendingSteps !== 'object' || Array.isArray(pendingSteps)) return false;
+
+  const events = Array.isArray(execution?.events) ? execution.events : [];
+  const stepNumbers = Object.keys(pendingSteps)
+    .map(Number)
+    .filter(step => Number.isInteger(step) && step > 0)
+    .sort((a, b) => a - b);
+
+  for (const pendingStep of stepNumbers) {
+    const pendingInput = pendingSteps[pendingStep];
+    const planRevision = Number(execution?.metadata?.planRevision || 1);
+    const challengeIndex = events.findLastIndex(event =>
+      event?.type === 'approval.challenge.persisted' &&
+      Number(event.data?.step) === pendingStep &&
+      Number(event.data?.planRevision || 1) === planRevision &&
+      (event.data?.operationId || null) === (pendingInput?.operationId || null)
+    );
+    if (challengeIndex < 0) continue;
+
+    const authorizationIndex = events.findLastIndex(event =>
+      event?.type === 'approval.resume.authorized' &&
+      Number(event.data?.step) === pendingStep &&
+      Number(event.data?.planRevision || 1) === planRevision &&
+      (event.data?.operationId || null) === (pendingInput?.operationId || null)
+    );
+    if (challengeIndex > authorizationIndex) return execution?.status === 'running';
+  }
+
+  return false;
 }
 
 function isTaskCreationSettled(execution, approvalPending = false) {
@@ -46,10 +70,15 @@ function taskSummary(execution, approvalPending = false) {
   };
 }
 
-async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed, approvalPending = false) {
+async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed) {
   const execution = await service.findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal });
   assertTaskExecutionIdentity(execution, executionId, tenantId, persistencePrincipal);
-  const isPendingApproval = approvalPending || isApprovalPendingExecution(execution);
+  const executionStatus = String(execution?.status || '').toLowerCase();
+  // The durable execution state wins over the transient APPROVAL_REQUIRED
+  // signal: approval may be resolved (or the execution cancelled/failed)
+  // before the task-creation response is committed.
+  const isPendingApproval = executionStatus === 'awaiting_approval' ||
+    (executionStatus === 'running' && isApprovalPendingExecution(execution));
   if (!isTaskCreationSettled(execution, isPendingApproval)) {
     throw new AppError(
       'التنفيذ المحجوز ما زال جاريًا؛ سيظل سجل منع التكرار قابلًا للمصالحة ولن يُعاد تشغيله',
@@ -188,15 +217,13 @@ class AgentService {
       }
       if (persistedExecution) {
         assertTaskExecutionIdentity(persistedExecution, executionId, tenantId, persistencePrincipal);
-        const approvalPending = isApprovalPendingExecution(persistedExecution);
         return completeTaskFromExecution(
-          this, repository, begun.key, executionId, tenantId, persistencePrincipal, true, approvalPending
+          this, repository, begun.key, executionId, tenantId, persistencePrincipal, true
         );
       }
     }
 
     let result;
-    let approvalPending = false;
     try {
       result = await this.execute(clean, { executionId, ownerSessionContext, persistencePrincipal });
     } catch (error) {
@@ -208,7 +235,6 @@ class AgentService {
           throw new AppError('هوية التنفيذ المعلقة لا تطابق الهوية المحجوزة', 409, 'TASK_EXECUTION_ID_MISMATCH');
         }
         result = { execution: { executionId: approvalExecutionId }, awaitingApproval: true };
-        approvalPending = true;
       } else {
         if (error?.executionAdmission === 'rejected') {
           try {
@@ -251,7 +277,7 @@ class AgentService {
     }
 
     return completeTaskFromExecution(
-      this, repository, begun.key, executionId, tenantId, persistencePrincipal, replayed, approvalPending
+      this, repository, begun.key, executionId, tenantId, persistencePrincipal, replayed
     );
   }
 

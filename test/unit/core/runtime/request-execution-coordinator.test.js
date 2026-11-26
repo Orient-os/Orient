@@ -186,6 +186,95 @@ test('forwards request-local approval collection to execution without corrupting
 });
 
 
+test('persists approval resume authorization before re-entering the agent execution loop', async () => {
+  const ExecutionContext = require('../../../../src/core/execution/execution-context');
+  const context = new ExecutionContext({
+    requestId: 'request-approval-resume-authorized',
+    input: 'resume approved guarded write',
+    executionId: 'execution-approval-resume-authorized',
+    tenantId: 'tenant-a'
+  });
+  context.start();
+  context.transitionAgentTo(AgentState.LIFECYCLE.PLANNING);
+  context.transitionAgentTo(AgentState.LIFECYCLE.VALIDATING);
+  context.setPlan({
+    intent: 'test.approval-resume-authorized',
+    steps: [{ step: 1, tool: 'danger.write', input: {}, dependsOn: null }]
+  });
+  context.metadata.planRevision = 1;
+  context.metadata.pendingStepInputs = { 1: { tool: 'danger.write', operationId: 'operation-approved-1' } };
+  context.record('approval.challenge.persisted', {
+    step: 1,
+    planRevision: 1,
+    operationId: 'operation-approved-1'
+  });
+  context.transitionAgentTo(AgentState.LIFECYCLE.EXECUTING);
+  const snapshot = context.snapshot();
+
+  let authorizationCheckpoint = null;
+  let executionStarted = false;
+  let leaseReleases = 0;
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {},
+    agentExecutionCoordinator: {
+      run: async ({ context: resumedContext }) => {
+        executionStarted = true;
+        assert.ok(authorizationCheckpoint, 'approval authorization must be durable before AgentLoop starts');
+        const authorization = resumedContext.events.find(event => event.type === 'approval.resume.authorized');
+        assert.ok(authorization);
+        assert.equal(authorization.data.step, 1);
+        assert.equal(authorization.data.operationId, 'operation-approved-1');
+        resumedContext.transitionAgentTo(AgentState.LIFECYCLE.OBSERVING);
+        resumedContext.transitionAgentTo(AgentState.LIFECYCLE.EVALUATING);
+        return {
+          loopResult: { result: { ok: true }, evaluation: { success: true } },
+          replanningDecision: { toJSON: () => ({ outcome: 'done' }) }
+        };
+      }
+    },
+    recoveryCoordinator: { fail: async () => {} },
+    persistence: {
+      executions: {
+        findById: async () => ({ ...snapshot, status: 'running' })
+      },
+      checkpoints: {
+        findLatest: async () => ({ checkpointId: 'checkpoint-approval-resume', sequence: 2, snapshot }),
+        acquireResumeLease: async () => ({ leaseId: 'lease-approval-resume' }),
+        renewResumeLease: async () => ({ leaseId: 'lease-approval-resume' }),
+        releaseResumeLease: async () => { leaseReleases += 1; }
+      }
+    },
+    persistenceCoordinator: {
+      persistExecution: async resumedContext => resumedContext.snapshot(),
+      persistEvents: async () => [],
+      checkpoint: async (resumedContext, mode, reason) => {
+        if (reason === 'approval_resume_authorized') {
+          authorizationCheckpoint = resumedContext.snapshot();
+          assert.equal(mode, 'update');
+          assert.equal(authorizationCheckpoint.status, 'running');
+          assert.ok(authorizationCheckpoint.events.some(event => event.type === 'approval.resume.authorized'));
+        }
+        return {};
+      }
+    },
+    approvalService: {
+      findReusable: async () => ({ approvalId: 'approval-approved-1' })
+    },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    tenantId: 'tenant-a',
+    maxInputChars: 1000
+  });
+
+  const result = await coordinator.resume('execution-approval-resume-authorized');
+
+  assert.equal(result.resumed, true);
+  assert.equal(result.execution.status, 'completed');
+  assert.equal(executionStarted, true);
+  assert.ok(authorizationCheckpoint);
+  assert.equal(leaseReleases, 1);
+});
+
 test('resume returns durable cancellation when cancellation wins terminal completion commit', async () => {
   const ExecutionContext = require('../../../../src/core/execution/execution-context');
   const context = new ExecutionContext({

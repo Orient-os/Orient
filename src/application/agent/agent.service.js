@@ -212,15 +212,13 @@ class AgentService {
       }
       if (persistedExecution) {
         assertTaskExecutionIdentity(persistedExecution, executionId, tenantId, persistencePrincipal);
-        const approvalPending = isApprovalPendingExecution(persistedExecution);
         return completeTaskFromExecution(
-          this, repository, begun.key, executionId, tenantId, persistencePrincipal, true, approvalPending
+          this, repository, begun.key, executionId, tenantId, persistencePrincipal, true
         );
       }
     }
 
     let result;
-    let approvalPending = false;
     try {
       result = await this.execute(clean, { executionId, ownerSessionContext, persistencePrincipal });
     } catch (error) {
@@ -232,7 +230,6 @@ class AgentService {
           throw new AppError('هوية التنفيذ المعلقة لا تطابق الهوية المحجوزة', 409, 'TASK_EXECUTION_ID_MISMATCH');
         }
         result = { execution: { executionId: approvalExecutionId }, awaitingApproval: true };
-        approvalPending = true;
       } else {
         if (error?.executionAdmission === 'rejected') {
           try {
@@ -275,7 +272,7 @@ class AgentService {
     }
 
     return completeTaskFromExecution(
-      this, repository, begun.key, executionId, tenantId, persistencePrincipal, replayed, approvalPending
+      this, repository, begun.key, executionId, tenantId, persistencePrincipal, replayed
     );
   }
 

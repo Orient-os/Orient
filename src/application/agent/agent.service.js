@@ -251,7 +251,7 @@ class AgentService {
     }
 
     return completeTaskFromExecution(
-      this, repository, begun.key, executionId, tenantId, persistencePrincipal, false, approvalPending
+      this, repository, begun.key, executionId, tenantId, persistencePrincipal, replayed, approvalPending
     );
   }
 

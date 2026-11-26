@@ -104,6 +104,7 @@ test('binds task idempotency lifecycle to the same authenticated persistence pri
     userId: 'owner-a',
     persistence: {
       idempotency: {
+        findByKey: async () => null,
         begin: async args => {
           received.push({ method: 'begin', principal: args.persistencePrincipal });
           return { created: true, key: 'principal-bound-key', record: { ...args, status: 'running' } };

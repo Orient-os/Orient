@@ -65,7 +65,7 @@ function taskSummary(execution, approvalPending = false) {
   };
 }
 
-async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed, approvalPending = false) {
+async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed) {
   const execution = await service.findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal });
   assertTaskExecutionIdentity(execution, executionId, tenantId, persistencePrincipal);
   const executionStatus = String(execution?.status || '').toLowerCase();

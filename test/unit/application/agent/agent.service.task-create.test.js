@@ -8,6 +8,7 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
   const records = new Map();
   const durableExecutions = new Map();
   let executions = 0;
+  let currentStatus = status;
   const idempotency = {
     async findByKey(key) {
       return records.get(key) || null;
@@ -64,7 +65,7 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
       }
       return {
         executionId: id,
-        status,
+        status: currentStatus,
         currentStep: 2,
         startedAt: '2026-10-10T10:00:00.000Z',
         updatedAt: '2026-10-10T10:00:02.000Z',
@@ -75,7 +76,13 @@ function createRuntime({ execute, status = 'completed', userId = 'owner-test' } 
       };
     }
   };
-  return { service: new AgentService(runtime), runtime, records, get executions() { return executions; } };
+  return {
+    service: new AgentService(runtime),
+    runtime,
+    records,
+    setStatus(nextStatus) { currentStatus = nextStatus; },
+    get executions() { return executions; }
+  };
 }
 
 test('unified task creation is durably idempotent and returns a sanitized task summary', async () => {
@@ -172,6 +179,34 @@ test('ambiguous runtime failure retains the reserved execution identity for safe
   assert.equal(fixture.records.values().next().value.status, 'completed');
 });
 
+
+test('a stale approval-required signal cannot override a terminal durable execution state', async t => {
+  for (const terminalStatus of ['completed', 'failed', 'cancelled']) {
+    await t.test(terminalStatus, async () => {
+      let setStatus;
+      const fixture = createRuntime({
+        status: 'awaiting_approval',
+        execute: async (_goal, options) => {
+          setStatus(terminalStatus);
+          throw Object.assign(new Error('Owner approval was required before the concurrent terminal transition'), {
+            code: 'APPROVAL_REQUIRED',
+            executionContext: { executionId: options.executionId }
+          });
+        }
+      });
+      setStatus = fixture.setStatus;
+
+      const result = await fixture.service.createTask({
+        goal: 'run a task with a concurrent approval resolution',
+        idempotencyKey: 'approval-terminal-race-' + terminalStatus + '-001'
+      });
+
+      assert.equal(result.task.status, terminalStatus);
+      assert.equal(result.replayed, false);
+      assert.equal(fixture.executions, 1);
+    });
+  }
+});
 
 test('approval-required execution is accepted as a durable task and does not retry the high-risk action', async () => {
   const fixture = createRuntime({

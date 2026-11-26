@@ -49,7 +49,12 @@ function taskSummary(execution, approvalPending = false) {
 async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed, approvalPending = false) {
   const execution = await service.findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal });
   assertTaskExecutionIdentity(execution, executionId, tenantId, persistencePrincipal);
-  const isPendingApproval = approvalPending || isApprovalPendingExecution(execution);
+  const executionStatus = String(execution?.status || '').toLowerCase();
+  // The durable execution state wins over the transient APPROVAL_REQUIRED
+  // signal: approval may be resolved (or the execution cancelled/failed)
+  // before the task-creation response is committed.
+  const isPendingApproval = executionStatus === 'awaiting_approval' ||
+    (executionStatus === 'running' && (approvalPending || isApprovalPendingExecution(execution)));
   if (!isTaskCreationSettled(execution, isPendingApproval)) {
     throw new AppError(
       'التنفيذ المحجوز ما زال جاريًا؛ سيظل سجل منع التكرار قابلًا للمصالحة ولن يُعاد تشغيله',

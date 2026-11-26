@@ -372,8 +372,9 @@ test('atomic writes fsync and close their temporary file descriptor', t => {
   const repository = f.create();
   const originalOpenSync = fs.openSync;
   const originalFsyncSync = fs.fsyncSync;
+  const originalFstatSync = fs.fstatSync;
   let temporaryDescriptor;
-  let fsyncCalls = 0;
+  let fileFsyncCalls = 0;
 
   fs.openSync = function (target, ...args) {
     const descriptor = originalOpenSync.call(this, target, ...args);
@@ -381,12 +382,12 @@ test('atomic writes fsync and close their temporary file descriptor', t => {
     return descriptor;
   };
   fs.fsyncSync = function (descriptor) {
-    fsyncCalls += 1;
+    if (!originalFstatSync(descriptor).isDirectory()) fileFsyncCalls += 1;
     return originalFsyncSync.call(this, descriptor);
   };
   try {
     repository.write([{ id: 'durable-event', type: 'test.created' }]);
-    assert.equal(fsyncCalls, 1);
+    assert.equal(fileFsyncCalls, 1);
     assert.throws(
       () => fs.fstatSync(temporaryDescriptor),
       error => error.code === 'EBADF'

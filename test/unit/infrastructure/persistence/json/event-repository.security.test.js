@@ -42,8 +42,10 @@ test('event reads reject symbolic links without following them', t => {
     assert.throws(() => f.create(), error => error.code === 'EVENT_STORAGE_UNSAFE_FILESYSTEM');
     return;
   }
-  const repository = f.create();
-  assert.throws(() => repository.read(), error => error.code === 'EVENT_STORAGE_CORRUPT');
+  assert.throws(
+    () => f.create(),
+    error => error.code === 'EVENT_STORAGE_CORRUPT'
+  );
 });
 
 test('stale and legacy lock directories fail closed without rename or deletion', t => {
@@ -640,4 +642,101 @@ test('constructor accepts EEXIST when another creator wins the initial event-fil
 
   assert.equal(simulatedRace, true);
   assert.deepEqual(repository.read(), []);
+});
+
+
+test('event reads reject hard-linked storage files', t => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX hard-link validation is not available');
+    return;
+  }
+  const f = fixture(t);
+  const repository = f.create();
+  const alias = path.join(f.root, 'events-alias.json');
+  fs.linkSync(repository.filePath, alias);
+  assert.throws(
+    () => repository.read(),
+    error => error.code === 'EVENT_STORAGE_CORRUPT'
+  );
+});
+
+test('event reads reject files with permissive permissions', t => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    t.skip('POSIX file permission checks are not available');
+    return;
+  }
+  const f = fixture(t);
+  const repository = f.create();
+  fs.chmodSync(repository.filePath, 0o644);
+  assert.throws(
+    () => repository.read(),
+    error => error.code === 'EVENT_STORAGE_FILE_PERMISSIONS_INVALID'
+  );
+});
+
+test('event storage validates every existing ancestor before creating its directory', t => {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    t.skip('POSIX ancestor ownership and mode checks are not available');
+    return;
+  }
+  const f = fixture(t);
+  const grandparent = path.join(f.root, 'writable-grandparent');
+  const parent = path.join(grandparent, 'private-parent');
+  const storage = path.join(parent, 'events');
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  fs.chmodSync(grandparent, 0o777);
+  try {
+    assert.throws(
+      () => new EventRepository(path.join(storage, 'events.json')),
+      error => error.code === 'EVENT_STORAGE_PARENT_UNTRUSTED'
+    );
+    assert.equal(fs.existsSync(storage), false);
+  } finally {
+    fs.chmodSync(grandparent, 0o700);
+  }
+});
+
+test('event writes fsync the storage directory after atomic replacement', t => {
+  const f = fixture(t);
+  const repository = f.create();
+  const originalFsyncSync = fs.fsyncSync;
+  let directorySyncs = 0;
+  fs.fsyncSync = function (descriptor) {
+    if (originalFstatSync(descriptor).isDirectory()) directorySyncs += 1;
+    return originalFsyncSync.call(this, descriptor);
+  };
+  const originalFstatSync = fs.fstatSync;
+  try {
+    repository.append({ id: 'directory-sync-event', type: 'test.created' });
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+  }
+  assert.equal(directorySyncs, 1);
+});
+
+test('directory fsync failure after rename preserves the committed event for safe retry', t => {
+  const f = fixture(t);
+  const repository = f.create();
+  const originalFsyncSync = fs.fsyncSync;
+  const expected = Object.assign(new Error('directory sync failed'), { code: 'EIO' });
+  let injected = false;
+  fs.fsyncSync = function (descriptor) {
+    if (!injected && originalFstatSync(descriptor).isDirectory()) {
+      injected = true;
+      throw expected;
+    }
+    return originalFsyncSync.call(this, descriptor);
+  };
+  const originalFstatSync = fs.fstatSync;
+  try {
+    assert.throws(
+      () => repository.append({ id: 'durability-uncertain-event', type: 'test.created' }),
+      error => error === expected && error.durabilityUncertain === true
+    );
+  } finally {
+    fs.fsyncSync = originalFsyncSync;
+  }
+  assert.equal(repository.findAll().filter(event => event.id === 'durability-uncertain-event').length, 1);
+  repository.append({ id: 'durability-uncertain-event', type: 'test.created' });
+  assert.equal(repository.findAll().filter(event => event.id === 'durability-uncertain-event').length, 1);
 });

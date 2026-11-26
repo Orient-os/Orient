@@ -1015,3 +1015,48 @@ test('restored checkpoints cannot cross owner or tenant boundaries before durabl
     expectedQuotaInputChecks: 1
   });
 });
+
+
+test('uses the reserved execution identity as the durable ExecutionContext identity', async () => {
+  let observedExecutionId = null;
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {
+      plan: async () => ({
+        plan: { intent: 'test', steps: [{ step: 1, tool: 'test.tool' }] },
+        validation: { valid: true, steps: [{ step: 1, tool: 'test.tool' }] }
+      })
+    },
+    agentExecutionCoordinator: {
+      run: async ({ context, plan }) => {
+        observedExecutionId = context.executionId;
+        context.transitionAgentTo(AgentState.LIFECYCLE.VALIDATING);
+        context.transitionAgentTo(AgentState.LIFECYCLE.EXECUTING);
+        context.transitionAgentTo(AgentState.LIFECYCLE.OBSERVING);
+        context.transitionAgentTo(AgentState.LIFECYCLE.EVALUATING);
+        return {
+          plan,
+          loopResult: { result: { ok: true }, evaluation: { success: true } },
+          replanningDecision: { toJSON: () => ({ replanned: false }) }
+        };
+      }
+    },
+    recoveryCoordinator: { fail: async () => {} },
+    persistence: null,
+    persistenceCoordinator: {
+      persistExecution: async () => null,
+      persistEvents: async () => []
+    },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    tenantId: 'tenant-a',
+    userId: 'owner-a',
+    workspaceId: 'workspace-a',
+    maxInputChars: 1000
+  });
+
+  const result = await coordinator.execute('execute one operation', {
+    executionId: 'reserved-execution-identity-0001'
+  });
+  assert.equal(observedExecutionId, 'reserved-execution-identity-0001');
+  assert.equal(result.execution.executionId, 'reserved-execution-identity-0001');
+});

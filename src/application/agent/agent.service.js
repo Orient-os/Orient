@@ -1,6 +1,71 @@
 const AppError = require('../../core/errors/AppError');
 const { assertPersistencePrincipal } = require('../../core/security/persistence-principal');
 
+function isApprovalPendingExecution(execution) {
+  const pendingSteps = execution?.metadata?.pendingStepInputs;
+  const hasPendingSteps = pendingSteps && typeof pendingSteps === 'object' &&
+    !Array.isArray(pendingSteps) && Object.keys(pendingSteps).length > 0;
+  const hasApprovalChallenge = Array.isArray(execution?.events) &&
+    execution.events.some(event => event?.type === 'approval.challenge.persisted');
+  return execution?.status === 'running' && hasPendingSteps && hasApprovalChallenge;
+}
+
+function isTaskCreationSettled(execution, approvalPending = false) {
+  return ['completed', 'failed', 'cancelled', 'awaiting_approval'].includes(
+    String(execution?.status || '').toLowerCase()
+  ) || approvalPending;
+}
+
+function assertTaskExecutionIdentity(execution, executionId, tenantId, persistencePrincipal = null) {
+  const persistedTenantId = execution?.tenantId || execution?.metadata?.tenantId;
+  const persistedOwnerId = execution?.userId || execution?.metadata?.userId;
+  if (!execution || execution.executionId !== executionId ||
+      (tenantId !== 'local' && persistedTenantId !== tenantId) ||
+      (tenantId === 'local' && persistedTenantId && persistedTenantId !== 'local') ||
+      (persistencePrincipal && persistedOwnerId !== persistencePrincipal.ownerId)) {
+    throw new AppError(
+      'Persisted execution identity, tenant, or owner does not match the idempotency reservation',
+      502,
+      'TASK_EXECUTION_ID_MISMATCH'
+    );
+  }
+}
+
+function taskSummary(execution, approvalPending = false) {
+  const awaitingApproval = execution.status === 'awaiting_approval' || approvalPending;
+  return {
+    id: execution.executionId,
+    status: awaitingApproval ? 'awaiting_approval' : execution.status,
+    currentStep: execution.currentStep ?? null,
+    createdAt: execution.startedAt || null,
+    updatedAt: execution.updatedAt || null,
+    completedAt: execution.completedAt || null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    agentLifecycle: execution.agentLifecycle || null,
+    version: 1
+  };
+}
+
+async function completeTaskFromExecution(service, repository, key, executionId, tenantId, persistencePrincipal, replayed, approvalPending = false) {
+  const execution = await service.findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal });
+  assertTaskExecutionIdentity(execution, executionId, tenantId, persistencePrincipal);
+  const isPendingApproval = approvalPending || isApprovalPendingExecution(execution);
+  if (!isTaskCreationSettled(execution, isPendingApproval)) {
+    throw new AppError(
+      'التنفيذ المحجوز ما زال جاريًا؛ سيظل سجل منع التكرار قابلًا للمصالحة ولن يُعاد تشغيله',
+      409,
+      'TASK_EXECUTION_IN_PROGRESS'
+    );
+  }
+  const task = taskSummary(execution, isPendingApproval);
+  await repository.complete(key, task, {
+    tenantId,
+    ...(persistencePrincipal ? { persistencePrincipal } : {})
+  });
+  return { task, replayed };
+}
+
+
 class AgentService {
   constructor(runtime) {
     this.runtime = runtime;
@@ -49,17 +114,37 @@ class AgentService {
 
     const repository = this.runtime.persistence?.idempotency;
     if (!repository || typeof repository.begin !== 'function' ||
-        typeof repository.complete !== 'function' || typeof repository.fail !== 'function') {
+        typeof repository.findByKey !== 'function' || typeof repository.complete !== 'function' ||
+        typeof repository.fail !== 'function') {
       throw new AppError('Durable task idempotency storage is required', 503, 'TASK_IDEMPOTENCY_STORAGE_REQUIRED');
     }
 
     const crypto = require('node:crypto');
     const tenantId = this.runtime.tenantId || 'local';
+    const ownerId = persistencePrincipal?.ownerId || this.runtime.userId || 'local';
     const digest = crypto.createHash('sha256').update(idempotencyKey, 'utf8').digest('hex');
+    const ownerScopeDigest = crypto.createHash('sha256')
+      .update(JSON.stringify([tenantId, ownerId, digest]), 'utf8')
+      .digest('hex');
     const requestDigest = crypto.createHash('sha256').update(clean, 'utf8').digest('hex');
-    const operationId = 'api-v1-task-create:' + tenantId + ':' + digest;
+    const operationId = 'api-v1-task-create:' + tenantId + ':' + ownerScopeDigest;
+    const legacyOperationId = 'api-v1-task-create:' + tenantId + ':' + digest;
+    if (legacyOperationId !== operationId) {
+      const legacyRecord = await repository.findByKey(legacyOperationId, {
+        tenantId,
+        ...(persistencePrincipal ? { persistencePrincipal } : {})
+      });
+      if (legacyRecord) {
+        throw new AppError(
+          'يوجد سجل منع تكرار قديم لا يمكن ربطه بأمان بهوية مالك وتنفيذ محددين',
+          409,
+          'TASK_LEGACY_IDEMPOTENCY_KEY_UNRESOLVED'
+        );
+      }
+    }
+    const reservedExecutionId = crypto.randomUUID();
     const begun = await repository.begin({
-      executionId: crypto.randomUUID(),
+      executionId: reservedExecutionId,
       step: 1,
       tool: 'api.v1.tasks.create:' + requestDigest,
       planRevision: 1,
@@ -68,68 +153,119 @@ class AgentService {
       ...(persistencePrincipal ? { persistencePrincipal } : {})
     });
 
-    if (!begun.created) {
-      if (begun.record?.tool !== 'api.v1.tasks.create:' + requestDigest) {
-        throw new AppError('لا يمكن إعادة استخدام مفتاح منع التكرار لطلب مختلف', 409, 'IDEMPOTENCY_KEY_REUSED');
-      }
-      if (begun.record?.status === 'completed' && begun.record.result) {
-        return { task: begun.record.result, replayed: true };
-      }
-      throw new AppError(
-        'هذا الطلب قيد التنفيذ أو استُخدم مفتاحه مع طلب سابق غير مكتمل',
-        409,
-        'IDEMPOTENCY_KEY_CONFLICT'
-      );
+    if (!begun.created && begun.record?.tool !== 'api.v1.tasks.create:' + requestDigest) {
+      throw new AppError('لا يمكن إعادة استخدام مفتاح منع التكرار لطلب مختلف', 409, 'IDEMPOTENCY_KEY_REUSED');
+    }
+    if (!begun.created && begun.record?.status === 'completed' && begun.record.result) {
+      return { task: begun.record.result, replayed: true };
+    }
+    if (!begun.created && begun.record?.status !== 'running') {
+      throw new AppError('سجل منع التكرار وصل إلى حالة نهائية ولا يمكن إعادة تشغيله', 409, 'IDEMPOTENCY_KEY_CONFLICT');
     }
 
-    let task;
-    try {
-      let result;
-      try {
-        result = await this.execute(clean, { ownerSessionContext, persistencePrincipal });
-      } catch (error) {
-        // Approval-required executions have a durable ID and are paused, not failed.
-        // Accept the task without retrying the high-risk side effect.
-        const approvalExecutionId = error?.code === 'APPROVAL_REQUIRED'
-          ? error.executionContext?.executionId
-          : null;
-        if (typeof approvalExecutionId !== 'string' || !approvalExecutionId) throw error;
-        result = { execution: { executionId: approvalExecutionId }, awaitingApproval: true };
-      }
-      const executionId = result?.execution?.executionId || result?.executionId;
-      if (typeof executionId !== 'string' || !executionId) {
-        throw new AppError('لم يُرجع Runtime معرّف مهمة قابلًا للتحقق', 502, 'TASK_EXECUTION_ID_MISSING');
-      }
+    const executionId = begun.record?.executionId;
+    if (typeof executionId !== 'string' || !executionId.trim()) {
+      throw new AppError('سجل منع التكرار لا يحتوي على هوية تنفيذ موثوقة', 503, 'TASK_EXECUTION_ID_MISSING');
+    }
 
-      const execution = await this.getExecutionStatus(executionId, { persistencePrincipal });
-      task = {
-        id: execution.executionId,
-        status: execution.status,
-        currentStep: execution.currentStep ?? null,
-        createdAt: execution.startedAt || null,
-        updatedAt: execution.updatedAt || null,
-        completedAt: execution.completedAt || null,
-        cancellationRequested: Boolean(execution.cancellationRequested),
-        agentLifecycle: execution.agentLifecycle || null,
-        version: 1
-      };
+    if (begun.created && executionId !== reservedExecutionId) {
+      throw new AppError('حجز منع التكرار لم يحتفظ بهوية التنفيذ الأصلية', 502, 'TASK_EXECUTION_ID_MISMATCH');
+    }
+
+    const replayed = !begun.created;
+    if (replayed) {
+      let persistedExecution = null;
+      try {
+        persistedExecution = await this.findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal });
+      } catch (error) {
+        if (error?.code !== 'EXECUTION_NOT_FOUND') {
+          throw new AppError(
+            'تعذرت مصالحة التنفيذ المحجوز بأمان؛ لم تتم إعادة تشغيله',
+            503,
+            'TASK_EXECUTION_RECONCILIATION_REQUIRED'
+          );
+        }
+      }
+      if (persistedExecution) {
+        assertTaskExecutionIdentity(persistedExecution, executionId, tenantId, persistencePrincipal);
+        const approvalPending = isApprovalPendingExecution(persistedExecution);
+        return completeTaskFromExecution(
+          this, repository, begun.key, executionId, tenantId, persistencePrincipal, true, approvalPending
+        );
+      }
+    }
+
+    let result;
+    let approvalPending = false;
+    try {
+      result = await this.execute(clean, { executionId, ownerSessionContext, persistencePrincipal });
     } catch (error) {
+      const approvalExecutionId = error?.code === 'APPROVAL_REQUIRED'
+        ? error.executionContext?.executionId
+        : null;
+      if (typeof approvalExecutionId === 'string' && approvalExecutionId) {
+        if (approvalExecutionId !== executionId) {
+          throw new AppError('هوية التنفيذ المعلقة لا تطابق الهوية المحجوزة', 409, 'TASK_EXECUTION_ID_MISMATCH');
+        }
+        result = { execution: { executionId: approvalExecutionId }, awaitingApproval: true };
+        approvalPending = true;
+      } else {
+        if (error?.executionAdmission === 'rejected') {
+          try {
+            await repository.fail(begun.key, {
+              code: error?.code || 'TASK_CREATION_REJECTED',
+              message: error?.message || 'Task creation was rejected before admission'
+            }, { tenantId, ...(persistencePrincipal ? { persistencePrincipal } : {}) });
+          } catch (_) {
+            // A failed terminal write leaves the reservation blocked, never replayable.
+          }
+        }
+        throw error;
+      }
+    }
+
+    if (result?.executionAdmission === 'rejected') {
+      const rejection = new AppError(
+        result.message || 'Runtime rejected the task before durable admission',
+        400,
+        result.code || 'TASK_ADMISSION_REJECTED'
+      );
+      rejection.executionAdmission = 'rejected';
       try {
         await repository.fail(begun.key, {
-          code: error?.code || 'TASK_CREATION_FAILED',
-          message: error?.message || 'Task creation failed'
+          code: rejection.code,
+          message: rejection.message
         }, { tenantId, ...(persistencePrincipal ? { persistencePrincipal } : {}) });
       } catch (_) {
-        // Preserve the original runtime error; the durable running record still
-        // prevents a retry from silently executing the same key a second time.
+        // A failed terminal write leaves the reservation blocked, never replayable.
       }
-      throw error;
+      throw rejection;
     }
 
-    await repository.complete(begun.key, task, { tenantId, ...(persistencePrincipal ? { persistencePrincipal } : {}) });
-    return { task, replayed: false };
+    const returnedExecutionId = result?.execution?.executionId || result?.executionId;
+    if (typeof returnedExecutionId !== 'string' || !returnedExecutionId) {
+      throw new AppError('لم يُرجع Runtime معرّف مهمة قابلًا للتحقق', 502, 'TASK_EXECUTION_ID_MISSING');
+    }
+    if (returnedExecutionId !== executionId) {
+      throw new AppError('Runtime أنشأ تنفيذًا بهوية مختلفة عن الهوية المحجوزة', 409, 'TASK_EXECUTION_ID_MISMATCH');
+    }
+
+    return completeTaskFromExecution(
+      this, repository, begun.key, executionId, tenantId, persistencePrincipal, false, approvalPending
+    );
   }
 
+
+  async findTaskExecutionRecord(executionId, { tenantId, persistencePrincipal = null } = {}) {
+    const executions = this.runtime.persistence?.executions;
+    if (typeof executions?.findById === 'function') {
+      return executions.findById(executionId, {
+        tenantId,
+        ...(persistencePrincipal ? { persistencePrincipal } : {})
+      });
+    }
+    return this.getExecutionStatus(executionId, { persistencePrincipal });
+  }
 
   async getFinalAnswer(executionId, { persistencePrincipal = null } = {}) {
     const status = await this.getExecutionStatus(executionId, { persistencePrincipal });

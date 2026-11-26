@@ -184,7 +184,7 @@ class RequestExecutionCoordinator {
     return true;
   }
 
-  async execute(input, { approval = null, approvals = {}, ownerSessionContext = null, persistencePrincipal = null } = {}) {
+  async execute(input, { approval = null, approvals = {}, executionId = null, ownerSessionContext = null, persistencePrincipal = null } = {}) {
     await this.assertOwnerSessionContext(ownerSessionContext);
     const requestId = crypto.randomUUID();
     const text = String(input || '').trim();
@@ -202,9 +202,14 @@ class RequestExecutionCoordinator {
     this.quotaService.assertTenant(this.tenantId);
     this.quotaService.assertInputSize(text);
 
+    if (executionId !== null && (typeof executionId !== 'string' || !executionId.trim() || executionId.length > 200)) {
+      throw new AppError('Execution identity is invalid', 400, 'EXECUTION_ID_INVALID');
+    }
+
     let context = new ExecutionContext({
       requestId,
       input: text,
+      ...(executionId ? { executionId } : {}),
       tenantId: this.tenantId,
       userId: this.userId,
       workspaceId: this.workspaceId,

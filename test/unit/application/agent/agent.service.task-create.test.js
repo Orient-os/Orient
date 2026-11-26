@@ -4,10 +4,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const AgentService = require('../../../../src/application/agent/agent.service');
 
-function createRuntime({ execute, status = 'completed' } = {}) {
+function createRuntime({ execute, status = 'completed', userId = 'owner-test' } = {}) {
   const records = new Map();
+  const durableExecutions = new Map();
   let executions = 0;
   const idempotency = {
+    async findByKey(key) {
+      return records.get(key) || null;
+    },
     async begin(args) {
       const existing = records.get(args.operationId);
       if (existing) return { created: false, key: args.operationId, record: existing };
@@ -37,13 +41,27 @@ function createRuntime({ execute, status = 'completed' } = {}) {
   };
   const runtime = {
     tenantId: 'tenant-test',
+    userId,
     persistence: { idempotency },
-    async execute(goal) {
+    async execute(goal, options = {}) {
       executions += 1;
-      if (execute) return execute(goal);
-      return { execution: { executionId: 'execution-1' } };
+      let result;
+      try {
+        result = execute ? await execute(goal, options) : { execution: { executionId: options.executionId || 'execution-1' } };
+      } catch (error) {
+        if (error?.code === 'APPROVAL_REQUIRED' && error.executionContext?.executionId) {
+          durableExecutions.set(error.executionContext.executionId, true);
+        }
+        throw error;
+      }
+      const id = result?.execution?.executionId || result?.executionId;
+      if (id) durableExecutions.set(id, true);
+      return result;
     },
     async getExecutionStatus(id) {
+      if (!durableExecutions.has(id)) {
+        throw Object.assign(new Error('Execution not found: ' + id), { code: 'EXECUTION_NOT_FOUND' });
+      }
       return {
         executionId: id,
         status,
@@ -53,11 +71,11 @@ function createRuntime({ execute, status = 'completed' } = {}) {
         completedAt: status === 'completed' ? '2026-10-10T10:00:02.000Z' : null,
         cancellationRequested: false,
         agentLifecycle: status === 'awaiting_approval' ? 'paused' : 'completed',
-        tenantId: 'must-not-leak'
+        tenantId: 'tenant-test'
       };
     }
   };
-  return { service: new AgentService(runtime), records, get executions() { return executions; } };
+  return { service: new AgentService(runtime), runtime, records, get executions() { return executions; } };
 }
 
 test('unified task creation is durably idempotent and returns a sanitized task summary', async () => {
@@ -74,7 +92,7 @@ test('unified task creation is durably idempotent and returns a sanitized task s
   assert.equal(first.replayed, false);
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.task, first.task);
-  assert.equal(first.task.id, 'execution-1');
+  assert.equal(first.task.id, fixture.records.values().next().value.executionId);
   assert.equal(first.task.status, 'completed');
   assert.equal(Object.hasOwn(first.task, 'tenantId'), false);
   assert.equal(fixture.executions, 1);
@@ -90,20 +108,29 @@ test('unified task creation rejects reuse of one idempotency key for a different
   assert.equal(fixture.executions, 1);
 });
 
-test('unified task creation fails closed while the same key is still running', async () => {
+test('existing reservation is not redispatched when durable execution lookup is uncertain', async () => {
   const fixture = createRuntime();
-  const digest = require('node:crypto').createHash('sha256').update('request-key-0003').digest('hex');
-  const requestDigest = require('node:crypto').createHash('sha256').update('still running').digest('hex');
-  fixture.records.set('api-v1-task-create:tenant-test:' + digest, {
-    key: 'api-v1-task-create:tenant-test:' + digest,
+  const crypto = require('node:crypto');
+  const digest = crypto.createHash('sha256').update('request-key-0003').digest('hex');
+  const ownerScopeDigest = crypto.createHash('sha256')
+    .update(JSON.stringify(['tenant-test', 'owner-test', digest]), 'utf8')
+    .digest('hex');
+  const operationId = 'api-v1-task-create:tenant-test:' + ownerScopeDigest;
+  const requestDigest = crypto.createHash('sha256').update('still running').digest('hex');
+  fixture.records.set(operationId, {
+    key: operationId,
+    executionId: 'reserved-existing-execution',
     tool: 'api.v1.tasks.create:' + requestDigest,
     status: 'running',
     result: null
   });
+  fixture.runtime.getExecutionStatus = async () => {
+    throw Object.assign(new Error('database temporarily unavailable'), { code: 'EXECUTION_STORAGE_UNAVAILABLE' });
+  };
 
   await assert.rejects(
     fixture.service.createTask({ goal: 'still running', idempotencyKey: 'request-key-0003' }),
-    error => error.code === 'IDEMPOTENCY_KEY_CONFLICT'
+    error => error.code === 'TASK_EXECUTION_RECONCILIATION_REQUIRED'
   );
   assert.equal(fixture.executions, 0);
 });
@@ -120,29 +147,39 @@ test('unified task creation requires durable idempotency storage', async () => {
   );
 });
 
-test('runtime failures are persisted as failed idempotency records and cannot replay execution', async () => {
+test('ambiguous runtime failure retains the reserved execution identity for safe retry', async () => {
+  const seenExecutionIds = [];
+  let attempts = 0;
   const fixture = createRuntime({
-    execute: async () => { throw Object.assign(new Error('runtime unavailable'), { code: 'RUNTIME_UNAVAILABLE' }); }
+    execute: async (_goal, options) => {
+      attempts += 1;
+      seenExecutionIds.push(options.executionId);
+      if (attempts === 1) {
+        throw Object.assign(new Error('runtime transport interrupted'), { code: 'RUNTIME_UNAVAILABLE' });
+      }
+      return { execution: { executionId: options.executionId } };
+    }
   });
   await assert.rejects(
     fixture.service.createTask({ goal: 'a task', idempotencyKey: 'request-key-0005' }),
     error => error.code === 'RUNTIME_UNAVAILABLE'
   );
-  await assert.rejects(
-    fixture.service.createTask({ goal: 'a task', idempotencyKey: 'request-key-0005' }),
-    error => error.code === 'IDEMPOTENCY_KEY_CONFLICT'
-  );
-  assert.equal(fixture.executions, 1);
+  const recovered = await fixture.service.createTask({ goal: 'a task', idempotencyKey: 'request-key-0005' });
+  assert.equal(recovered.replayed, true);
+  assert.equal(recovered.task.id, seenExecutionIds[0]);
+  assert.equal(seenExecutionIds[1], seenExecutionIds[0]);
+  assert.equal(fixture.executions, 2);
+  assert.equal(fixture.records.values().next().value.status, 'completed');
 });
 
 
 test('approval-required execution is accepted as a durable task and does not retry the high-risk action', async () => {
   const fixture = createRuntime({
     status: 'awaiting_approval',
-    execute: async () => {
+    execute: async (_goal, options) => {
       throw Object.assign(new Error('Owner approval is required'), {
         code: 'APPROVAL_REQUIRED',
-        executionContext: { executionId: 'execution-pending-approval' }
+        executionContext: { executionId: options.executionId }
       });
     }
   });
@@ -156,10 +193,78 @@ test('approval-required execution is accepted as a durable task and does not ret
     idempotencyKey: 'request-key-approval-0001'
   });
 
-  assert.equal(first.task.id, 'execution-pending-approval');
+  assert.equal(first.task.id, fixture.records.values().next().value.executionId);
   assert.equal(first.task.status, 'awaiting_approval');
   assert.equal(first.replayed, false);
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.task, first.task);
   assert.equal(fixture.executions, 1);
+});
+
+
+test('task idempotency keys are isolated between owners in the same tenant', async () => {
+  const fixture = createRuntime();
+  const first = await fixture.service.createTask({
+    goal: 'same owner-independent goal',
+    idempotencyKey: 'same-key-across-owners'
+  });
+  fixture.runtime.userId = 'different-owner';
+  const second = await fixture.service.createTask({
+    goal: 'same owner-independent goal',
+    idempotencyKey: 'same-key-across-owners'
+  });
+
+  assert.equal(first.replayed, false);
+  assert.equal(second.replayed, false);
+  assert.notEqual(first.task.id, second.task.id);
+  assert.equal(fixture.records.size, 2);
+  assert.equal(fixture.executions, 2);
+});
+
+
+test('legacy tenant-only idempotency reservation fails closed instead of creating a duplicate', async () => {
+  const fixture = createRuntime();
+  const crypto = require('node:crypto');
+  const digest = crypto.createHash('sha256').update('legacy-key-0001').digest('hex');
+  const legacyOperationId = 'api-v1-task-create:tenant-test:' + digest;
+  fixture.records.set(legacyOperationId, {
+    key: legacyOperationId,
+    executionId: 'legacy-reservation-with-unbound-runtime-id',
+    tool: 'api.v1.tasks.create:' + crypto.createHash('sha256').update('legacy task').digest('hex'),
+    status: 'running',
+    result: null
+  });
+
+  await assert.rejects(
+    fixture.service.createTask({ goal: 'legacy task', idempotencyKey: 'legacy-key-0001' }),
+    error => error.code === 'TASK_LEGACY_IDEMPOTENCY_KEY_UNRESOLVED'
+  );
+  assert.equal(fixture.executions, 0);
+});
+
+
+test('active durable execution remains recoverable and is never redispatched', async () => {
+  const fixture = createRuntime({ status: 'running' });
+  await assert.rejects(
+    fixture.service.createTask({ goal: 'long-running task', idempotencyKey: 'running-task-key-001' }),
+    error => error.code === 'TASK_EXECUTION_IN_PROGRESS'
+  );
+  await assert.rejects(
+    fixture.service.createTask({ goal: 'long-running task', idempotencyKey: 'running-task-key-001' }),
+    error => error.code === 'TASK_EXECUTION_IN_PROGRESS'
+  );
+  assert.equal(fixture.executions, 1);
+  assert.equal(fixture.records.values().next().value.status, 'running');
+});
+
+test('runtime cannot substitute a different execution ID for the reserved task identity', async () => {
+  const fixture = createRuntime({
+    execute: async () => ({ execution: { executionId: 'different-runtime-execution-id' } })
+  });
+  await assert.rejects(
+    fixture.service.createTask({ goal: 'identity-bound task', idempotencyKey: 'identity-mismatch-key-001' }),
+    error => error.code === 'TASK_EXECUTION_ID_MISMATCH'
+  );
+  assert.equal(fixture.executions, 1);
+  assert.equal(fixture.records.values().next().value.status, 'running');
 });

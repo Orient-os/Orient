@@ -362,6 +362,7 @@ class ProjectOperationReceiptStore {
       const temporary = filePath + '.tmp.' + token;
       let fd;
       let temporaryCreated = false;
+      let receiptWriteError;
       try {
         fd = fs.openSync(temporary, 'wx', 0o600);
         temporaryCreated = true;
@@ -371,6 +372,9 @@ class ProjectOperationReceiptStore {
         fd = undefined;
         fs.renameSync(temporary, filePath);
         syncDirectory(this.directory);
+      } catch (error) {
+        receiptWriteError = error;
+        throw error;
       } finally {
         if (fd !== undefined) {
           try { fs.closeSync(fd); } catch {}
@@ -378,8 +382,15 @@ class ProjectOperationReceiptStore {
         // An exclusive-open collision means this operation never owned the
         // pathname. Never remove a pre-existing temporary file on that path.
         if (temporaryCreated) {
-          try { fs.unlinkSync(temporary); } catch (error) {
-            if (error.code !== 'ENOENT') throw error;
+          try { fs.unlinkSync(temporary); } catch (cleanupError) {
+            if (cleanupError.code !== 'ENOENT') {
+              if (receiptWriteError) {
+                if (!Array.isArray(receiptWriteError.cleanupErrors)) receiptWriteError.cleanupErrors = [];
+                receiptWriteError.cleanupErrors.push(cleanupError);
+              } else {
+                throw cleanupError;
+              }
+            }
           }
         }
       }
@@ -400,8 +411,12 @@ class ProjectOperationReceiptStore {
           // A cleanup failure must not mask the primary write/commit error.
           // If the receipt rename already happened, callers can reconcile by
           // reading the receipt; retain both failures for diagnostics.
-          if (operationError) operationError.cleanupError = cleanupError;
-          else throw cleanupError;
+          if (operationError) {
+            if (!Array.isArray(operationError.cleanupErrors)) operationError.cleanupErrors = [];
+            operationError.cleanupErrors.push(cleanupError);
+          } else {
+            throw cleanupError;
+          }
         }
       }
     }

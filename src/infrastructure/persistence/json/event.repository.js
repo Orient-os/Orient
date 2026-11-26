@@ -81,7 +81,7 @@ class EventRepository {
     try {
       const descriptor = fs.openSync(this.filePath, 'wx', PRIVATE_FILE_MODE);
       try {
-        fs.writeFileSync(descriptor, '[]\\n', 'utf8');
+        fs.writeFileSync(descriptor, '[]\n', 'utf8');
         fs.fsyncSync(descriptor);
       } finally {
         fs.closeSync(descriptor);
@@ -128,7 +128,7 @@ class EventRepository {
   }
 
   write(events) {
-    const serialized = Buffer.from(JSON.stringify(events, null, 2) + '\\n', 'utf8');
+    const serialized = Buffer.from(JSON.stringify(events, null, 2) + '\n', 'utf8');
     if (serialized.length > MAX_EVENT_FILE_BYTES) {
       fail('Event storage exceeds its maximum permitted size', 'EVENT_STORAGE_TOO_LARGE');
     }

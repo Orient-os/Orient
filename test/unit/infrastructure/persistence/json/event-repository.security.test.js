@@ -700,24 +700,26 @@ test('event writes fsync the storage directory after atomic replacement', t => {
   const f = fixture(t);
   const repository = f.create();
   const originalFsyncSync = fs.fsyncSync;
+  const originalFstatSync = fs.fstatSync;
   let directorySyncs = 0;
   fs.fsyncSync = function (descriptor) {
     if (originalFstatSync(descriptor).isDirectory()) directorySyncs += 1;
     return originalFsyncSync.call(this, descriptor);
   };
-  const originalFstatSync = fs.fstatSync;
+  const initialDirectorySyncs = directorySyncs;
   try {
     repository.append({ id: 'directory-sync-event', type: 'test.created' });
   } finally {
     fs.fsyncSync = originalFsyncSync;
   }
-  assert.equal(directorySyncs, 1);
+  assert.equal(directorySyncs - initialDirectorySyncs, 1);
 });
 
 test('directory fsync failure after rename preserves the committed event for safe retry', t => {
   const f = fixture(t);
   const repository = f.create();
   const originalFsyncSync = fs.fsyncSync;
+  const originalFstatSync = fs.fstatSync;
   const expected = Object.assign(new Error('directory sync failed'), { code: 'EIO' });
   let injected = false;
   fs.fsyncSync = function (descriptor) {
@@ -727,7 +729,6 @@ test('directory fsync failure after rename preserves the committed event for saf
     }
     return originalFsyncSync.call(this, descriptor);
   };
-  const originalFstatSync = fs.fstatSync;
   try {
     assert.throws(
       () => repository.append({ id: 'durability-uncertain-event', type: 'test.created' }),

@@ -3,11 +3,30 @@ const { assertPersistencePrincipal } = require('../../core/security/persistence-
 
 function isApprovalPendingExecution(execution) {
   const pendingSteps = execution?.metadata?.pendingStepInputs;
-  const hasPendingSteps = pendingSteps && typeof pendingSteps === 'object' &&
-    !Array.isArray(pendingSteps) && Object.keys(pendingSteps).length > 0;
-  const hasApprovalChallenge = Array.isArray(execution?.events) &&
-    execution.events.some(event => event?.type === 'approval.challenge.persisted');
-  return execution?.status === 'running' && hasPendingSteps && hasApprovalChallenge;
+  if (!pendingSteps || typeof pendingSteps !== 'object' || Array.isArray(pendingSteps)) return false;
+  const pendingStep = Object.keys(pendingSteps)
+    .map(Number)
+    .filter(Number.isInteger)
+    .sort((a, b) => a - b)[0];
+  if (!pendingStep) return false;
+
+  const pendingInput = pendingSteps[pendingStep];
+  const events = Array.isArray(execution?.events) ? execution.events : [];
+  const challengeIndex = events.findLastIndex(event =>
+    event?.type === 'approval.challenge.persisted' &&
+    Number(event.step) === pendingStep &&
+    Number(event.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
+    (event.operationId || null) === (pendingInput?.operationId || null)
+  );
+  if (challengeIndex < 0) return false;
+
+  const authorizationIndex = events.findLastIndex(event =>
+    event?.type === 'approval.resume.authorized' &&
+    Number(event.step) === pendingStep &&
+    Number(event.planRevision || 1) === Number(execution?.metadata?.planRevision || 1) &&
+    (event.operationId || null) === (pendingInput?.operationId || null)
+  );
+  return execution?.status === 'running' && challengeIndex > authorizationIndex;
 }
 
 function isTaskCreationSettled(execution, approvalPending = false) {
@@ -54,7 +73,7 @@ async function completeTaskFromExecution(service, repository, key, executionId, 
   // signal: approval may be resolved (or the execution cancelled/failed)
   // before the task-creation response is committed.
   const isPendingApproval = executionStatus === 'awaiting_approval' ||
-    (executionStatus === 'running' && (approvalPending || isApprovalPendingExecution(execution)));
+    (executionStatus === 'running' && isApprovalPendingExecution(execution));
   if (!isTaskCreationSettled(execution, isPendingApproval)) {
     throw new AppError(
       'التنفيذ المحجوز ما زال جاريًا؛ سيظل سجل منع التكرار قابلًا للمصالحة ولن يُعاد تشغيله',

@@ -106,3 +106,43 @@ test('SQLite cancellation committed after the read wins the terminal compare-and
   assert.equal(persisted.cancellationReason, 'owner requested cancellation');
   assert.equal(persisted.result, null);
 });
+
+
+test('SQLite execution identity cannot be rebound by updates', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-identity-'));
+  const persistence = new SqlitePersistence({ filePath: path.join(directory, 'runtime.db') });
+  t.after(() => {
+    persistence.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  persistence.executions.insert({
+    id: 'stable-id',
+    executionId: 'stable-execution',
+    requestId: 'stable-request',
+    goalId: 'stable-goal',
+    parentExecutionId: 'stable-parent',
+    executionVersion: 4,
+    status: 'running',
+    metadata: { tenantId: 'tenant-a', userId: 'owner-a', workspaceId: 'workspace-a' }
+  }, { tenantId: 'tenant-a' });
+
+  assert.throws(
+    () => persistence.executions.update('stable-execution', { requestId: 'replacement-request' }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+  );
+  assert.throws(
+    () => persistence.executions.update('stable-execution', {
+      metadata: { tenantId: 'tenant-b', userId: 'owner-a', workspaceId: 'workspace-a' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'metadata.tenantId'
+  );
+
+  const updated = persistence.executions.update('stable-execution', {
+    metadata: { label: 'safe mutable metadata' }
+  }, { tenantId: 'tenant-a' });
+  assert.equal(updated.requestId, 'stable-request');
+  assert.equal(updated.goalId, 'stable-goal');
+  assert.equal(updated.executionVersion, 4);
+  assert.equal(updated.metadata.tenantId, 'tenant-a');
+  assert.equal(updated.metadata.label, 'safe mutable metadata');
+});

@@ -292,12 +292,11 @@ class SqliteDatabase {
 
   close() {
     if (this.closed) return;
+    // Preserve the live handle if SQLite refuses to close so callers can
+    // release outstanding statements and retry instead of losing the handle.
+    if (this.connection) this.connection.close();
+    this.connection = null;
     this.closed = true;
-    if (this.connection) {
-      const connection = this.connection;
-      this.connection = null;
-      connection.close();
-    }
   }
 }
 

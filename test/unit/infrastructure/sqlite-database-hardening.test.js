@@ -161,3 +161,80 @@ test('in-memory SQLite remains independent of private filesystem setup', () => {
     assert.equal(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='memories'").length, 1);
   } finally { db.close(); }
 });
+
+test('rejects a hard-linked SQLite sidecar before opening the database', () => {
+  withDirectory(directory => {
+    const filePath = path.join(directory, 'orient.db');
+    const target = path.join(directory, 'sidecar-target');
+    fs.writeFileSync(target, 'untrusted sidecar', { mode: 0o600 });
+    fs.linkSync(target, filePath + '-shm');
+    assert.throws(() => new SqliteDatabase(filePath),
+      error => error.code === 'SQLITE_STORAGE_FILE_LINKS_INVALID');
+  });
+});
+
+test('rejects a non-regular SQLite sidecar', () => {
+  withDirectory(directory => {
+    const filePath = path.join(directory, 'orient.db');
+    fs.mkdirSync(filePath + '-journal');
+    assert.throws(() => new SqliteDatabase(filePath),
+      error => error.code === 'SQLITE_STORAGE_FILE_TYPE_INVALID');
+  });
+});
+
+test('WAL and SHM files are private while a file-backed connection is active', () => {
+  withDirectory(directory => {
+    const filePath = path.join(directory, 'orient.db');
+    const db = new SqliteDatabase(filePath);
+    try {
+      db.run(
+        'INSERT INTO memories(memory_id, tenant_id, scope, state, type, text, payload) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ['wal-permissions', 'tenant-a', 'private', 'active', 'note', 'wal test', '{}']
+      );
+      for (const suffix of ['-wal', '-shm']) {
+        const sidecar = filePath + suffix;
+        assert.equal(fs.existsSync(sidecar), true, suffix + ' should exist during an active WAL connection');
+        const stats = fs.lstatSync(sidecar, { bigint: true });
+        assert.equal(stats.isFile(), true);
+        assert.equal(stats.nlink, 1n);
+        if (typeof process.getuid === 'function') {
+          assert.equal(stats.uid, BigInt(process.getuid()));
+        }
+        assert.equal(stats.mode & 0o7777n, 0o600n);
+      }
+    } finally { db.close(); }
+  });
+});
+
+test('committed WAL data survives abrupt process termination and restart', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-wal-recovery-'));
+  try {
+    const filePath = path.join(directory, 'recovery.db');
+    const modulePath = path.resolve(__dirname, '../../../src/infrastructure/persistence/sqlite/sqlite-database.js');
+    const source = [
+      "const Database = require(process.argv[1]);",
+      "const db = new Database(process.argv[2]);",
+      "db.run('INSERT INTO memories(memory_id, tenant_id, scope, state, type, text, payload) VALUES (?, ?, ?, ?, ?, ?, ?)', ['crash-recovery', 'tenant-a', 'private', 'active', 'note', 'durable', '{}']);",
+      "process.exit(0);"
+    ].join('');
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', source, modulePath, filePath], {
+        stdio: ['ignore', 'ignore', 'pipe']
+      });
+      let stderr = '';
+      child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('close', code => code === 0
+        ? resolve()
+        : reject(new Error('SQLite crash-writer failed (' + code + '): ' + stderr)));
+    });
+
+    const db = new SqliteDatabase(filePath);
+    try {
+      const rows = db.query('SELECT text FROM memories WHERE memory_id = ?', ['crash-recovery']);
+      assert.deepEqual(rows, [{ text: 'durable' }]);
+    } finally { db.close(); }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

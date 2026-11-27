@@ -4,7 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const OrientRuntime = require('../../../../src/core/runtime/orient-runtime');
 
-function createRuntime({ deferPersistenceStartup = true, workflowScheduler = null } = {}) {
+function createRuntime({
+  deferPersistenceStartup = true,
+  workflowScheduler = null,
+  persistence = null
+} = {}) {
   return new OrientRuntime({
     toolRegistry: {
       has: () => false,
@@ -13,20 +17,21 @@ function createRuntime({ deferPersistenceStartup = true, workflowScheduler = nul
     agentOrchestrator: {
       recover: async error => { throw error; }
     },
+    persistence,
     deferPersistenceStartup,
     workflowScheduler
   });
 }
 
-test('runtime exposes the single-use lifecycle state transitions', async () => {
+test('runtime is single-use: start succeeds once and shutdown permanently closes it', async () => {
   const scheduler = { shutdown: async () => ({ stopped: true }) };
   const runtime = createRuntime({ workflowScheduler: scheduler });
 
-  assert.equal(runtime.state, 'CREATED');
+  assert.equal(runtime.ready, false);
   await runtime.start();
-  assert.equal(runtime.state, 'READY');
+  assert.equal(runtime.ready, true);
   await runtime.shutdown();
-  assert.equal(runtime.state, 'STOPPED');
+  assert.equal(runtime.ready, false);
 
   await assert.rejects(
     runtime.start(),
@@ -90,39 +95,46 @@ test('runtime rejects new execution while shutdown is in progress', async () => 
 
   releaseShutdown({ stopped: true });
   await stopping;
-  assert.equal(runtime.state, 'STOPPED');
+  assert.equal(runtime.ready, false);
 });
 
-test('safe startup failure is retryable and transitions to READY after a successful retry', async () => {
-  const runtime = createRuntime();
+test('safe quota initialization failure can retry on the same Runtime before recovery', async () => {
   let attempts = 0;
-  runtime.infrastructureCoordinator.start = async () => {
-    attempts += 1;
-    if (attempts === 1) throw new Error('quota initialization failed before recovery');
-    return { started: true, recovered: 0 };
+  const persistence = {
+    tenantQuotas: {
+      ensureTenant: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('quota initialization failed before recovery');
+        return { initialized: true };
+      }
+    }
   };
+  const runtime = createRuntime({ persistence });
 
   await assert.rejects(runtime.start(), /quota initialization failed/);
-  assert.equal(runtime.state, 'FAILED_RETRYABLE');
+  assert.equal(runtime.ready, false);
 
   await runtime.start();
-  assert.equal(runtime.state, 'READY');
+  assert.equal(runtime.ready, true);
   assert.equal(attempts, 2);
 });
 
-test('partial persistence recovery failure is terminal and maps to FAILED_TERMINAL', async () => {
-  const runtime = createRuntime();
-  const failure = Object.assign(new Error('partial workflow recovery'), {
-    code: 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE',
-    retryable: false
-  });
-  runtime.infrastructureCoordinator.start = async () => { throw failure; };
-
-  await assert.rejects(runtime.start(), error => error === failure);
-  assert.equal(runtime.state, 'FAILED_TERMINAL');
+test('partial persistence recovery failure is terminal and cannot restart the Runtime', async () => {
+  const persistence = {
+    workflows: {
+      findAll: async () => { throw new Error('partial workflow recovery'); }
+    }
+  };
+  const runtime = createRuntime({ persistence });
 
   await assert.rejects(
     runtime.start(),
-    error => error.code === 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE'
+    error => error.code === 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE' && error.retryable === false
+  );
+  assert.equal(runtime.ready, false);
+
+  await assert.rejects(
+    runtime.start(),
+    error => error.code === 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE' && error.retryable === false
   );
 });

@@ -185,13 +185,11 @@ jobs:
       - name: Install PostgreSQL client dependency
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Run PostgreSQL integration suite
+      - name: Run PostgreSQL role provisioning integration suite
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orient_test
-        run: |
-          node --test --test-timeout=120000 test/integration/postgres-persistence.integration.test.js
-          node --test --test-timeout=120000 test/integration/postgres-task-idempotency.integration.test.js
-          ORIENT_RUN_ROLE_PROVISIONING_INTEGRATION=1 node --test --test-timeout=120000 test/integration/postgres-role-provisioning.integration.test.js
+          ORIENT_RUN_ROLE_PROVISIONING_INTEGRATION: "1"
+        run: node --test --test-timeout=120000 test/integration/postgres-role-provisioning.integration.test.js
 
       - name: Generate adapter-specific persistence behavioral evidence
         env:

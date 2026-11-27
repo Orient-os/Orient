@@ -53,10 +53,61 @@ class BuildExecutionService {
 
       modification = await this.modifier.apply(changeSet);
 
-      const verification = await this.verifier.verify({
-        definitionOfDone,
-        checks
-      });
+      let verification;
+      try {
+        verification = await this.verifier.verify({
+          definitionOfDone,
+          checks
+        });
+      } catch (verificationError) {
+        if (!supportsRollback) {
+          return new BuildExecutionResult({
+            status: 'failed',
+            plan,
+            changeSet,
+            modification,
+            error: {
+              name: verificationError.name,
+              code: verificationError.code,
+              message: verificationError.message
+            }
+          });
+        }
+        try {
+          const rollback = usesTransactionRollback
+            ? await this.modifier.rollback(modification)
+            : await this.modifier.rollback(snapshots);
+          return new BuildExecutionResult({
+            status: 'failed',
+            plan,
+            changeSet,
+            modification,
+            error: {
+              name: verificationError.name,
+              code: verificationError.code,
+              message: verificationError.message
+            },
+            rollback
+          });
+        } catch (rollbackError) {
+          return new BuildExecutionResult({
+            status: 'rollback-failed',
+            plan,
+            changeSet,
+            modification,
+            error: {
+              name: rollbackError.name,
+              code: rollbackError.code,
+              message: rollbackError.message,
+              verificationError: verificationError.message
+            },
+            rollback: {
+              rolledBack: false,
+              rollbackErrors: rollbackError.rollbackErrors || []
+            }
+          });
+        }
+      }
 
       const verificationPassed =
         verification?.status === 'passed' &&

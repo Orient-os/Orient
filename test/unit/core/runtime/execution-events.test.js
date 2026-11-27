@@ -97,6 +97,9 @@ test('pending approval inbox delegates with the runtime tenant and bounded limit
   let received;
   const runtime = {
     tenantId: 'tenant-a',
+    requirePersistenceCapability(name) {
+      assert.equal(name, 'approval.durable');
+    },
     approvalService: {
       async listPending(options) {
         received = options;

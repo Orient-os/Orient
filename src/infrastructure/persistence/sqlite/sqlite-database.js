@@ -114,6 +114,7 @@ class SqliteDatabase {
       }
 
       this.connection.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+      this.assertSupportedSchemaVersion();
       const journal = this.connection.prepare('PRAGMA journal_mode=WAL').get();
       if (this.filePath !== ':memory:' &&
           String(journal?.journal_mode || '').toLowerCase() !== 'wal') {
@@ -145,6 +146,20 @@ class SqliteDatabase {
   assertOpen() {
     if (this.closed || !this.connection) {
       throw storageError('SQLite database connection is closed', 'SQLITE_CONNECTION_CLOSED');
+    }
+  }
+
+  assertSupportedSchemaVersion() {
+    const migrationTable = this.connection.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+    ).get();
+    if (!migrationTable) return;
+    const row = this.connection.prepare(
+      'SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations'
+    ).get();
+    if (Number(row?.version || 0) > SCHEMA_VERSION) {
+      throw storageError('SQLite schema is newer than this ORIENT version supports',
+        'SQLITE_SCHEMA_VERSION_UNSUPPORTED');
     }
   }
 

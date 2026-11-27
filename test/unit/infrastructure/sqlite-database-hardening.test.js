@@ -126,6 +126,10 @@ test('rejects a database schema version newer than the running application', () 
     fs.chmodSync(filePath, 0o600);
     assert.throws(() => new SqliteDatabase(filePath),
       error => error.code === 'SQLITE_SCHEMA_VERSION_UNSUPPORTED');
+    const verify = new DatabaseSync(filePath);
+    try {
+      assert.equal(verify.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+    } finally { verify.close(); }
   });
 });
 

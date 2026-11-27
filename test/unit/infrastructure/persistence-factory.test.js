@@ -50,7 +50,9 @@ test('JSON persistence passes the trusted preflight and initialized adapter cont
       agentDataDirectory: directory
     });
     assert.equal(runtime.resolvedCapabilities.contractVersion, '1.0.0');
-    assert.equal(runtime.verify().verified, true);
+    const verification = runtime.verify();
+    assert.equal(verification.interfacesVerified, true);
+    assert.equal(verification.guaranteesVerified, false);
     runtime.close();
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

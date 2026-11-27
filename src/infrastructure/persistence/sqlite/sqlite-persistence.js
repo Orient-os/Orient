@@ -2,6 +2,17 @@ const crypto = require('crypto');
 
 const TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled'];
 
+function terminalOutcome(execution) {
+  return {
+    status: execution.status,
+    result: execution.result ?? null,
+    error: execution.error ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null
+  };
+}
+
 function terminalConflict(currentStatus, requestedStatus) {
   const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
   error.code = 'EXECUTION_TERMINAL_CONFLICT';
@@ -79,10 +90,10 @@ class SqliteExecutionRepository {
     if (!current) return null;
 
     if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
-      if (patch.status && patch.status !== current.status) {
-        throw terminalConflict(current.status, patch.status);
-      }
-      return current;
+      const requested = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId });
+      if (requested.status === current.status &&
+          isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+      throw terminalConflict(current.status, requested.status);
     }
     if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
 
@@ -106,8 +117,10 @@ class SqliteExecutionRepository {
     const latest = this.findById(executionId, { tenantId });
     if (!latest) return null;
     if (TERMINAL_EXECUTION_STATUSES.includes(latest.status)) {
-      if (patch.status && patch.status !== latest.status) throw terminalConflict(latest.status, patch.status);
-      return latest;
+      const requested = this.normalize({ ...latest, ...patch, id: latest.id, executionId: latest.executionId });
+      if (requested.status === latest.status &&
+          isDeepStrictEqual(terminalOutcome(latest), terminalOutcome(requested))) return latest;
+      throw terminalConflict(latest.status, requested.status);
     }
     if (latest.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return latest;
     return null;

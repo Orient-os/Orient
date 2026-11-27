@@ -44,6 +44,7 @@ const MANIFESTS = Object.freeze({
       'tenant.isolation',
       'execution.identity.stability',
       'execution.terminal.integrity',
+      'idempotency.terminal.protection',
       'event.identity.idempotency'
     ]),
     capabilities: Object.freeze({

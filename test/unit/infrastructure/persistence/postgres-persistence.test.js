@@ -657,3 +657,54 @@ test('Postgres execution terminal retry returns the durable winner without rewri
   assert.deepEqual(result.result, { winner: 'completed' });
   assert.equal(db.calls.length, 1);
 });
+
+
+test('Postgres execution terminal retries are idempotent only for the same outcome', async () => {
+  const committed = {
+    executionId: 'exec-terminal', id: 'exec-terminal', tenantId: 'tenant-a',
+    status: 'completed', result: { committed: true }, error: null,
+    completedAt: '2026-11-27T10:00:00.000Z', cancellationRequested: false,
+    cancellationReason: null
+  };
+  const db = fakeDb([
+    { rows: [{ payload: committed }], rowCount: 1 },
+    { rows: [{ payload: committed }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('exec-terminal', {
+      status: 'completed', result: { committed: false }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT' && error.status === 409
+  );
+  const retry = await repo.update('exec-terminal', {
+    status: 'completed', result: { committed: true }
+  }, { tenantId: 'tenant-a' });
+  assert.deepEqual(retry.result, { committed: true });
+  assert.equal(db.calls.length, 2);
+});
+
+test('Postgres execution terminal compare-and-set rejects a stale conflicting writer', async () => {
+  const active = {
+    executionId: 'exec-race', id: 'exec-race', tenantId: 'tenant-a',
+    status: 'running', result: null, cancellationRequested: false
+  };
+  const winner = {
+    ...active, status: 'completed', result: { winner: true },
+    completedAt: '2026-11-27T10:00:00.000Z'
+  };
+  const db = fakeDb([
+    { rows: [{ payload: active }], rowCount: 1 },
+    { rows: [], rowCount: 0 },
+    { rows: [{ payload: winner }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+  await assert.rejects(
+    () => repo.update('exec-race', {
+      status: 'completed', result: { winner: false }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+  );
+  assert.match(db.calls[1].text, /NOT IN \\(\'completed\', \'failed\', \'cancelled\'\\)/);
+});

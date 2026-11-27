@@ -12,17 +12,7 @@ const adapters = ['json', 'sqlite', 'postgres'];
 const failures = [];
 const fileResults = new Map();
 
-function parseTapTests(output) {
-  const tests = [];
-  for (const line of String(output || '').split(/\r?\n/)) {
-    const match = line.match(/^\s*(ok|not ok)\s+\d+\s+-\s+(.+?)\s*$/);
-    if (!match) continue;
-    const name = match[2].replace(/\s+#\s+(?:SKIP|TODO)\b.*$/i, '').trim();
-    tests.push({ name, status: match[1] === 'ok' ? 'passed' : 'failed' });
-  }
-  return tests;
-}
-
+const parseTapTests = require('./lib/parse-tap-tests');
 function sha256(filePath) {
   return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
@@ -98,7 +88,8 @@ for (const [file, record] of fileResults) {
     const result = {
       ...expected,
       status: passed ? 'passed' : 'failed',
-      observedMatches: matches.length
+      observedMatches: matches.length,
+      observedStatus: matches.length === 1 ? matches[0].status : 'missing'
     };
     fileRecord.expected.push(result);
     if (!passed) failures.push({
@@ -106,7 +97,9 @@ for (const [file, record] of fileResults) {
       file,
       reason: matches.length !== 1
         ? 'expected exactly one matching test in TAP reporter output'
-        : 'test did not pass or its file process failed'
+        : matches[0].status !== 'passed'
+          ? 'evidence test did not pass (observed ' + matches[0].status + ')'
+          : 'test file process failed'
     });
   }
   if (run.error) failures.push({ file, reason: run.error.message });

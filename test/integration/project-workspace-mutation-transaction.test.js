@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const ProjectOperationReceiptStore = require('../../src/infrastructure/execution/project-operation-receipt-store');
 const { spawn } = require('node:child_process');
 
 function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 'contender' }) {
@@ -165,6 +166,8 @@ test('canonical project tool holds the workspace lock through receipt commit and
     assert.equal(staleResult.result.error.code, 'CHANGE_PRECONDITION_FAILED');
     await waitForExit(stale);
     assert.equal(await fs.readFile(path.join(root, 'target.txt'), 'utf8'), 'after');
+    const receiptStore = new ProjectOperationReceiptStore({ directory: receiptDirectory });
+    assert.equal(receiptStore.readIntent({ operationId: 'operation-stale', tenantId: 'tenant-lock-test' }), null);
   } finally {
     for (const child of [holder, contender, stale]) {
       if (child && child.exitCode === null) child.kill('SIGKILL');

@@ -299,3 +299,71 @@ test('constructor rejects invalid arguments and accepts the minimum positive loc
     () => new EventRepository(path.join(root, 'minimum-timeout.json'), { lockTimeoutMs: 1 })
   );
 });
+
+
+test('read rejects hard-linked and non-private event files using the opened descriptor metadata', t => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX ownership, mode, and hard-link assertions are not available');
+    return;
+  }
+
+  const hardlinkFixture = fixture(t);
+  fs.linkSync(hardlinkFixture.filePath, path.join(hardlinkFixture.root, 'events-hardlink.json'));
+  assert.throws(
+    () => hardlinkFixture.repository.read(),
+    error => error.code === 'EVENT_STORAGE_CORRUPT'
+  );
+
+  const permissionFixture = fixture(t);
+  fs.chmodSync(permissionFixture.filePath, 0o640);
+  assert.throws(
+    () => permissionFixture.repository.read(),
+    error => error.code === 'EVENT_STORAGE_FILE_PERMISSIONS_INVALID'
+  );
+});
+
+test('post-rename directory durability failure reports a committed write without rolling it back', t => {
+  const { filePath, repository } = fixture(t);
+  const originalFsync = fs.fsyncSync;
+  let directorySyncFailed = false;
+
+  fs.fsyncSync = function (descriptor) {
+    if (!directorySyncFailed && fs.fstatSync(descriptor).isDirectory()) {
+      directorySyncFailed = true;
+      throw Object.assign(new Error('simulated directory durability failure'), { code: 'EIO' });
+    }
+    return originalFsync.call(this, descriptor);
+  };
+
+  try {
+    assert.throws(
+      () => repository.append({ id: 'committed-before-durability-error', type: 'durability.test' }),
+      error => error.code === 'EIO' && error.durabilityUncertain === true
+    );
+  } finally {
+    fs.fsyncSync = originalFsync;
+  }
+
+  assert.equal(directorySyncFailed, true);
+  assert.deepEqual(repository.findAll().map(event => event.id), ['committed-before-durability-error']);
+  assert.deepEqual(
+    fs.readdirSync(path.dirname(filePath)).filter(name => name.startsWith('events.json.tmp.')),
+    []
+  );
+});
+
+test('read preserves unexpected filesystem failures instead of relabeling them as corrupt data', t => {
+  const { filePath, repository } = fixture(t);
+  const originalOpen = fs.openSync;
+  const denied = Object.assign(new Error('simulated storage permission failure'), { code: 'EACCES' });
+
+  fs.openSync = function (target, ...args) {
+    if (target === filePath) throw denied;
+    return originalOpen.call(this, target, ...args);
+  };
+  try {
+    assert.throws(() => repository.read(), error => error === denied && error.code === 'EACCES');
+  } finally {
+    fs.openSync = originalOpen;
+  }
+});

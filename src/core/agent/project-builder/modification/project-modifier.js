@@ -229,16 +229,13 @@ class ProjectModifier {
 
     return {
       rolledBack: true,
-      restored: attemptedChanges.map(attempted => {
-        const snapshot = snapshotsByPath.get(attempted.path);
-        return {
-          path: attempted.path,
-          existed: snapshot.existed,
-          contentSha256: snapshot.existed
-            ? crypto.createHash('sha256').update(snapshot.content).digest('hex')
-            : null
-        };
-      })
+      restored: snapshots.map(snapshot => ({
+        path: snapshot.path,
+        existed: snapshot.existed,
+        contentSha256: snapshot.existed
+          ? crypto.createHash('sha256').update(snapshot.content).digest('hex')
+          : null
+      }))
     };
   }
 

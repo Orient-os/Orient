@@ -108,7 +108,7 @@ test('post-initialization interface checks do not claim behavioral guarantees ar
   } = require('../../../../src/core/persistence/contracts/persistence-capability-validator');
   const resolved = resolve({ adapter: 'json', profile: 'local' });
   const persistence = {
-    executions: { findById() {}, insert() {}, update() {} },
+    executions: { findById() {}, insert() {}, update() {}, requestCancellation() {} },
     events: { append() {} },
     idempotency: { begin() {}, complete() {}, fail() {} }
   };

@@ -30,6 +30,30 @@ function readBoundedFile(fd, maxBytes, code, label) {
   return buffer.subarray(0, total).toString('utf8');
 }
 
+function validRollbackOutcome(result) {
+  const restored = result?.rollback?.restored;
+  if (result?.status !== 'failed' || result.rollback?.rolledBack !== true ||
+      !Array.isArray(restored) || restored.length === 0 || restored.length > 100) {
+    return false;
+  }
+  const paths = new Set();
+  return restored.every(item => {
+    if (!item || typeof item.path !== 'string' || !item.path ||
+        item.path.length > 512 || paths.has(item.path) ||
+        typeof item.existed !== 'boolean') return false;
+    paths.add(item.path);
+    return item.existed
+      ? typeof item.contentSha256 === 'string' && /^[a-f0-9]{64}$/.test(item.contentSha256)
+      : item.contentSha256 === null;
+  });
+}
+
+function validVerifiedOutcome(result) {
+  return Boolean(result && result.status === 'verified' &&
+    result.verification?.status === 'passed' &&
+    result.verification?.failed === 0);
+}
+
 function validIdentity(value) {
   return value && typeof value.operationId === 'string' &&
     value.operationId.length > 0 && value.operationId.length <= 256 &&
@@ -272,6 +296,11 @@ class ProjectOperationReceiptStore {
       throw corrupt;
     }
 
+    const verifiedOutcome = receipt?.outcome === 'verified' || receipt?.outcome === undefined;
+    const validOutcome = verifiedOutcome
+      ? validVerifiedOutcome(receipt?.result)
+      : receipt?.outcome === 'rolled_back' && validRollbackOutcome(receipt?.result);
+
     if (!receipt || receipt.version !== 1 ||
         receipt.operationId !== operationId ||
         receipt.tenantId !== tenantId ||
@@ -280,10 +309,7 @@ class ProjectOperationReceiptStore {
         typeof receipt.changeSetHash !== 'string' ||
         !/^[a-f0-9]{64}$/.test(receipt.changeSetHash) ||
         typeof receipt.recordedAt !== 'string' ||
-        !receipt.result || typeof receipt.result !== 'object' ||
-        receipt.result.status !== 'verified' ||
-        receipt.result.verification?.status !== 'passed' ||
-        receipt.result.verification?.failed !== 0) {
+        !validOutcome) {
       fail('Project operation receipt schema or identity is invalid', 'PROJECT_OPERATION_RECEIPT_CORRUPT');
     }
 
@@ -291,13 +317,13 @@ class ProjectOperationReceiptStore {
   }
 
   write({ operationId, tenantId, workspaceId, changeSetHash, result }) {
+    const verifiedOutcome = validVerifiedOutcome(result);
+    const rolledBackOutcome = validRollbackOutcome(result);
     if (!validIdentity({ operationId, tenantId }) ||
         typeof workspaceId !== 'string' || !/^[a-f0-9]{64}$/.test(workspaceId) ||
         typeof changeSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(changeSetHash) ||
-        !result || result.status !== 'verified' ||
-        result.verification?.status !== 'passed' ||
-        result.verification?.failed !== 0) {
-      fail('Only a verified project operation can be receipted', 'PROJECT_OPERATION_RECEIPT_INVALID');
+        (!verifiedOutcome && !rolledBackOutcome)) {
+      fail('Only verified or fully rolled-back project operations can be receipted', 'PROJECT_OPERATION_RECEIPT_INVALID');
     }
 
     this.ensureDirectory();
@@ -348,6 +374,7 @@ class ProjectOperationReceiptStore {
 
       const receipt = {
         version: 1,
+        outcome: verifiedOutcome ? 'verified' : 'rolled_back',
         operationId,
         tenantId,
         workspaceId,

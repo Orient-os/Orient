@@ -7,6 +7,7 @@ class ProjectModifier {
     }
 
     this.workspace = workspace;
+    this.transactions = new WeakMap();
   }
 
   async validateChange(change) {
@@ -146,37 +147,73 @@ class ProjectModifier {
     };
   }
 
-  async rollback(snapshots) {
+  async rollback(modification) {
+    const transaction = modification && this.transactions.get(modification);
+    if (!transaction) {
+      const error = new Error('Rollback requires the original in-memory modification transaction');
+      error.code = 'PROJECT_MODIFICATION_TRANSACTION_UNKNOWN';
+      throw error;
+    }
+    const result = await this.rollbackTransaction(transaction);
+    this.transactions.delete(modification);
+    return result;
+  }
+
+  async rollbackTransaction({ snapshots, attemptedChanges }) {
+    const snapshotsByPath = new Map(snapshots.map(snapshot => [snapshot.path, snapshot]));
     const rollbackErrors = [];
 
-    for (
-      let i = snapshots.length - 1;
-      i >= 0;
-      i -= 1
-    ) {
-      const snapshot = snapshots[i];
+    for (let index = attemptedChanges.length - 1; index >= 0; index -= 1) {
+      const attempted = attemptedChanges[index];
+      const snapshot = snapshotsByPath.get(attempted.path);
+      if (!snapshot) {
+        rollbackErrors.push({
+          path: attempted.path,
+          code: 'PROJECT_MODIFICATION_SNAPSHOT_MISSING',
+          message: 'Before-image snapshot is missing'
+        });
+        continue;
+      }
 
       try {
-        if (snapshot.existed) {
-          await this.workspace.writeText(
-            snapshot.path,
-            snapshot.content
-          );
-        } else {
-          const exists =
-            await this.workspace.exists(
-              snapshot.path
-            );
+        const exists = await this.workspace.exists(attempted.path);
+        if (!exists) {
+          if (!snapshot.existed) continue;
+          rollbackErrors.push({
+            path: attempted.path,
+            code: 'WORKSPACE_ROLLBACK_CONFLICT',
+            message: 'The original file disappeared before rollback'
+          });
+          continue;
+        }
 
-          if (exists) {
-            await this.workspace.removeFile(
-              snapshot.path
-            );
-          }
+        const current = await this.workspace.readText(attempted.path);
+        const currentHash = crypto.createHash('sha256').update(current).digest('hex');
+        const beforeHash = snapshot.existed
+          ? crypto.createHash('sha256').update(snapshot.content).digest('hex')
+          : null;
+
+        // A failed write may not have changed the target at all. Leave that
+        // state untouched; only reverse a file that still has our after-image.
+        if (snapshot.existed && currentHash === beforeHash) continue;
+        if (currentHash !== attempted.afterSha256) {
+          rollbackErrors.push({
+            path: attempted.path,
+            code: 'WORKSPACE_ROLLBACK_CONFLICT',
+            message: 'Current file content no longer matches this operation after-image'
+          });
+          continue;
+        }
+
+        if (snapshot.existed) {
+          await this.workspace.writeText(attempted.path, snapshot.content);
+        } else {
+          await this.workspace.removeFile(attempted.path);
         }
       } catch (error) {
         rollbackErrors.push({
-          path: snapshot.path,
+          path: attempted.path,
+          code: error.code || 'WORKSPACE_ROLLBACK_FAILED',
           name: error.name,
           message: error.message
         });
@@ -184,19 +221,13 @@ class ProjectModifier {
     }
 
     if (rollbackErrors.length > 0) {
-      const error = new Error(
-        'Rollback failed'
-      );
-
-      error.rollbackErrors =
-        rollbackErrors;
-
+      const error = new Error('Rollback could not safely restore every affected file');
+      error.code = 'PROJECT_MODIFICATION_ROLLBACK_FAILED';
+      error.rollbackErrors = rollbackErrors;
       throw error;
     }
 
-    return {
-      rolledBack: true
-    };
+    return { rolledBack: true };
   }
 
   async apply(changeSet) {
@@ -211,77 +242,61 @@ class ProjectModifier {
 
     const validatedChanges = [];
 
-    for (
-      const change of changeSet.changes
-    ) {
-      validatedChanges.push(
-        await this.validateChange(change)
-      );
+    for (const change of changeSet.changes) {
+      validatedChanges.push(await this.validateChange(change));
     }
 
     const paths = new Set();
-
-    for (
-      const change of validatedChanges
-    ) {
+    for (const change of validatedChanges) {
       if (paths.has(change.path)) {
-        throw new Error(
-          `Duplicate change path: ${change.path}`
-        );
+        throw new Error(`Duplicate change path: ${change.path}`);
       }
-
       paths.add(change.path);
     }
 
     const snapshots = [];
-
-    for (
-      const change of validatedChanges
-    ) {
-      snapshots.push(
-        await this.snapshot(change)
-      );
+    for (const change of validatedChanges) {
+      snapshots.push(await this.snapshot(change));
     }
 
     const results = [];
-
+    const attemptedChanges = [];
     try {
-      for (
-        const change of validatedChanges
-      ) {
+      for (const change of validatedChanges) {
+        attemptedChanges.push({
+          path: change.path,
+          afterSha256: crypto.createHash('sha256').update(change.content).digest('hex')
+        });
         if (change.action === 'create') {
-          results.push(
-            await this.createFile(change)
-          );
+          results.push(await this.createFile(change));
         } else {
-          results.push(
-            await this.updateFile(change)
-          );
+          results.push(await this.updateFile(change));
         }
       }
-
-      return {
-        applied: true,
-        rolledBack: false,
-        changes: results
-      };
     } catch (error) {
-      try {
-        await this.rollback(snapshots);
-      } catch (rollbackError) {
-        const combinedError = new Error(
-          `Modification failed and rollback failed: ${error.message}`
-        );
-
-        combinedError.cause = error;
-        combinedError.rollbackError =
-          rollbackError;
-
-        throw combinedError;
+      if (attemptedChanges.length > 0) {
+        try {
+          await this.rollbackTransaction({ snapshots, attemptedChanges });
+        } catch (rollbackError) {
+          const combinedError = new Error(
+            `Modification failed and rollback failed: ${error.message}`
+          );
+          combinedError.code = 'PROJECT_MODIFICATION_ROLLBACK_FAILED';
+          combinedError.cause = error;
+          combinedError.rollbackError = rollbackError;
+          throw combinedError;
+        }
       }
-
       throw error;
     }
+
+    const modification = {
+      applied: true,
+      rolledBack: false,
+      changes: results
+    };
+    this.transactions.set(modification, { snapshots, attemptedChanges });
+    return modification;
   }
 }
 

@@ -15,7 +15,6 @@
     "html",
     "json"
   ],
-  "reportDir": "reports/mutation",
   "concurrency": 2,
   "timeoutMS": 120000,
   "timeoutFactor": 2,

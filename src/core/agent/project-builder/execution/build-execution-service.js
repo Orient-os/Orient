@@ -131,7 +131,7 @@ class BuildExecutionService {
             rolledBack: false,
             rollbackErrors: error.rollbackError?.rollbackErrors || []
           }
-        } : {})
+        } : error.rollback ? { rollback: error.rollback } : {})
       });
     }
   }

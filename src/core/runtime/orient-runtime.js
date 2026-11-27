@@ -144,7 +144,10 @@ class OrientRuntime {
 
     this.persistence =
       persistence;
-    this.ready = deferPersistenceStartup !== true;
+    const deferRuntimeInfrastructureStartup = deferPersistenceStartup === true ||
+      (persistence && typeof persistence.health === 'function' &&
+        persistenceCapabilities?.interfacesVerified !== true);
+    this.ready = deferRuntimeInfrastructureStartup !== true;
     this.persistenceCapabilities = persistenceCapabilities;
 
     this.tenantId = tenantId || 'local';
@@ -186,7 +189,7 @@ class OrientRuntime {
       maxToolInputChars,
       quotaPolicy,
       quotaService,
-      deferStartup: deferPersistenceStartup,
+      deferStartup: deferRuntimeInfrastructureStartup,
       workflowPersistenceEnabled: persistenceCapabilities
         ? persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true
         : true

@@ -742,3 +742,61 @@ test('regenerates malformed persisted owner session IDs before restoring session
   assert.equal(persisted.sessions[0].sessionId, restored.sessionId,
     'the regenerated non-secret session identity must be durably persisted');
 });
+
+
+test('owner identity validates constructor and per-login policy boundaries before persistence side effects', async t => {
+  const invalidConstructorOptions = [
+    { sessionTtlMs: 999 },
+    { sessionTtlMs: 86400001 },
+    { sessionTtlMs: 1500.5 },
+    { sessionTtlMs: Number.MAX_SAFE_INTEGER + 1 },
+    { ownerEmail: 'not-an-email' },
+    { maxLoginFailures: 0 },
+    { maxLoginFailures: 101 },
+    { maxLoginFailures: 2.5 },
+    { loginLockoutMs: 999 },
+    { loginLockoutMs: 86400001 },
+    { loginLockoutMs: 1500.5 },
+    { loginLockoutMs: Number.MAX_SAFE_INTEGER + 1 }
+  ];
+
+  for (const options of invalidConstructorOptions) {
+    const { stateFile } = fixture(t);
+    assert.throws(
+      () => new OwnerIdentityService({ stateFile, ...options }),
+      error => error instanceof RangeError || error instanceof TypeError,
+      JSON.stringify(options)
+    );
+    assert.equal(fs.existsSync(stateFile), false, 'invalid constructor policy must fail before creating owner state');
+  }
+
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({
+    stateFile,
+    bootstrapPassword: 'temporary-owner-password-9F!x'
+  });
+  const persistedBefore = fs.readFileSync(stateFile);
+  const invalidLoginPolicies = [
+    { maxFailures: 0 },
+    { maxFailures: 101 },
+    { maxFailures: 2.5 },
+    { lockoutMs: 999 },
+    { lockoutMs: 86400001 },
+    { lockoutMs: 1500.5 },
+    { lockoutMs: Number.MAX_SAFE_INTEGER + 1 },
+    { now: -1 },
+    { now: 1.5 },
+    { now: Number.MAX_SAFE_INTEGER + 1 }
+  ];
+
+  for (const policy of invalidLoginPolicies) {
+    await assert.rejects(
+      identity.login({ username: 'Admin', password: 'wrong-password', ...policy }),
+      error => error instanceof RangeError,
+      JSON.stringify(policy)
+    );
+  }
+
+  assert.equal(identity.loginFailures.size, 0, 'invalid policy must not record or prune login failures');
+  assert.deepEqual(fs.readFileSync(stateFile), persistedBefore, 'invalid policy must not persist owner state');
+});

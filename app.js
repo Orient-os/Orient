@@ -569,7 +569,7 @@ async function start() {
   );
 }
 
-start().catch((error) => {
+start().catch(async (error) => {
   const diagnostic = typeof error?.toDiagnostic === 'function'
     ? error.toDiagnostic()
     : { code: error?.code || 'STARTUP_FAILED', message: error?.message || String(error) };

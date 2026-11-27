@@ -4,9 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
-const ProposalValidator = require('../../../../src/core/agent/project-builder/change-proposal/proposal-validator');
-const ProjectModifier = require('../../../../src/core/agent/project-builder/modification/project-modifier');
-const ProjectVerifier = require('../../../../src/core/agent/project-builder/verification/project-verifier');
+const ProposalValidator = require('../../../../../src/core/agent/project-builder/change-proposal/proposal-validator');
+const ProjectModifier = require('../../../../../src/core/agent/project-builder/modification/project-modifier');
+const ProjectVerifier = require('../../../../../src/core/agent/project-builder/verification/project-verifier');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');

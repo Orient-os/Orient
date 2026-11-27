@@ -463,3 +463,58 @@ test('owner identity state rejects a parent directory writable by other users wi
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('owner identity temp-file collision is preserved when exclusive creation fails', t => {
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({ stateFile, bootstrapPassword: 'temporary-owner-password-9F!x' });
+  const before = fs.readFileSync(stateFile, 'utf8');
+  const originalOpen = fs.openSync;
+  const originalClose = fs.closeSync;
+  let collision;
+  fs.openSync = function (target, ...args) {
+    if (typeof target === 'string' && target.startsWith(stateFile + '.') && target.endsWith('.tmp') && args[0] === 'wx') {
+      collision = target;
+      const fd = originalOpen.call(this, target, 'wx', 0o600);
+      originalClose.call(this, fd);
+      throw Object.assign(new Error('simulated EEXIST'), { code: 'EEXIST' });
+    }
+    return originalOpen.call(this, target, ...args);
+  };
+  try {
+    assert.throws(() => identity.save(), error => error.code === 'OWNER_IDENTITY_PERSIST_FAILED' && error.cause?.code === 'EEXIST');
+  } finally { fs.openSync = originalOpen; }
+  assert.ok(collision);
+  assert.equal(fs.existsSync(collision), true);
+  assert.equal(fs.readFileSync(stateFile, 'utf8'), before);
+});
+
+test('owner lockout key collision is preserved and not removed by a losing initializer', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-owner-key-race-'));
+  fs.chmodSync(root, 0o700);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stateFile = path.join(root, 'owner.json');
+  const keyFile = stateFile + '.lockout-key';
+  const originalOpen = fs.openSync;
+  const originalClose = fs.closeSync;
+  let reserved = false;
+  fs.openSync = function (target, flags, ...args) {
+    if (target === keyFile && typeof flags === 'number' && !reserved) {
+      throw Object.assign(new Error('simulated absent key'), { code: 'ENOENT' });
+    }
+    if (target === keyFile && flags === 'wx' && !reserved) {
+      reserved = true;
+      const fd = originalOpen.call(this, target, 'wx', 0o600);
+      originalClose.call(this, fd);
+      fs.writeFileSync(target, 'owned by another writer');
+      throw Object.assign(new Error('simulated reservation collision'), { code: 'EEXIST' });
+    }
+    return originalOpen.call(this, target, flags, ...args);
+  };
+  try {
+    assert.throws(() => new OwnerIdentityService({ stateFile, bootstrapPassword: 'temporary-owner-password-9F!x' }),
+      error => error.code === 'OWNER_LOCKOUT_KEY_INVALID');
+  } finally { fs.openSync = originalOpen; }
+  assert.equal(reserved, true);
+  assert.equal(fs.readFileSync(keyFile, 'utf8'), 'owned by another writer');
+});

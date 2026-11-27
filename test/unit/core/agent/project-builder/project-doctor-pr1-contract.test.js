@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const ProposalValidator = require('../../../../../src/core/agent/project-builder/change-proposal/proposal-validator');
 const ProjectModifier = require('../../../../../src/core/agent/project-builder/modification/project-modifier');
 const ProjectVerifier = require('../../../../../src/core/agent/project-builder/verification/project-verifier');
+const ChangeSet = require('../../../../../src/core/agent/project-builder/modification/change-set');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -136,4 +137,19 @@ test('owner dashboard visibly renders the truthful concurrency limitation from t
   assert.match(source, /summary\.reviewNotice/);
   assert.match(source, /card\.append\(reviewNotice\)/);
   assert.match(source, /expectedContentSha256 !== 'string' \|\| !\/\^\[a-f0-9\]\{64\}\$\/i\.test/);
+});
+
+
+test('change set preserves the update before-image digest for the modifier boundary', () => {
+  const expectedContentSha256 = sha256('before');
+  const changeSet = new ChangeSet({
+    changes: [{
+      action: 'update',
+      path: 'src/file.js',
+      content: 'after',
+      expectedContentSha256
+    }]
+  });
+
+  assert.equal(changeSet.changes[0].expectedContentSha256, expectedContentSha256);
 });

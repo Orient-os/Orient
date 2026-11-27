@@ -47,10 +47,18 @@ const MANIFESTS = Object.freeze({
       'event.identity.idempotency'
     ]),
     capabilities: Object.freeze({
-      'approval.durable': capability(SUPPORTED),
+      'approval.durable': capability(SUPPORTED, [], [
+        'approvals.findByExecution', 'approvals.findPending', 'approvals.save',
+        'approvals.findById', 'approvals.consume', 'approvals.recordDecision'
+      ]),
       'execution.resumeLease': capability(UNSUPPORTED),
       'worker.fencing': capability(UNSUPPORTED),
-      'workflow.durable': capability(SUPPORTED),
+      'workflow.durable': capability(SUPPORTED, [], [
+        'workflows.save', 'workflows.findById', 'workflows.findAll',
+        'workflowLeases.tryAcquire', 'workflowLeases.save',
+        'workflowLeases.renewIfOwned', 'workflowLeases.findByWorkflowId',
+        'workflowLeases.delete'
+      ]),
       'workflow.ephemeral': capability(UNSUPPORTED),
       'execution.cancellation': capability(UNSUPPORTED)
     })
@@ -67,10 +75,25 @@ const MANIFESTS = Object.freeze({
       'event.identity.idempotency'
     ]),
     capabilities: Object.freeze({
-      'approval.durable': capability(SUPPORTED),
-      'execution.resumeLease': capability(SUPPORTED),
-      'worker.fencing': capability(SUPPORTED),
-      'workflow.durable': capability(SUPPORTED),
+      'approval.durable': capability(SUPPORTED, [], [
+        'approvals.findByExecution', 'approvals.findPending', 'approvals.save',
+        'approvals.findById', 'approvals.consume', 'approvals.recordDecision'
+      ]),
+      'execution.resumeLease': capability(SUPPORTED, [], [
+        'checkpoints.acquireResumeLease', 'checkpoints.renewResumeLease',
+        'checkpoints.releaseResumeLease'
+      ]),
+      'worker.fencing': capability(SUPPORTED, [], [
+        'workers.register', 'workers.heartbeat', 'workers.unregister', 'workers.findById',
+        'workflowLeases.tryAcquire', 'workflowLeases.save', 'workflowLeases.renewIfOwned',
+        'workflowLeases.assertCurrent', 'workflowLeases.delete'
+      ]),
+      'workflow.durable': capability(SUPPORTED, [], [
+        'workflows.createWithEvents', 'workflows.save', 'workflows.findById', 'workflows.findAll',
+        'workflowLeases.tryAcquire', 'workflowLeases.save',
+        'workflowLeases.renewIfOwned', 'workflowLeases.findByWorkflowId',
+        'workflowLeases.delete'
+      ]),
       'workflow.ephemeral': capability(UNSUPPORTED),
       'execution.cancellation': capability(SUPPORTED)
     })

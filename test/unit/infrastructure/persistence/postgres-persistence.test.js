@@ -634,7 +634,7 @@ test('Postgres execution terminal transition is compare-and-set protected agains
   );
 
   assert.equal(db.calls.length, 3);
-  assert.match(db.calls[1].text, /COALESCE\\(payload->>'status', 'created'\\) NOT IN \\('completed', 'failed', 'cancelled'\\)/);
+  assert.ok(db.calls[1].text.includes("COALESCE(payload->>'status', 'created') NOT IN ('completed', 'failed', 'cancelled')"));
   assert.deepEqual(db.calls[1].values.slice(0, 2), ['exec-terminal', 'tenant-a']);
 });
 

@@ -1300,3 +1300,78 @@ test('does not treat a pending operation as already started unless every durable
     assert.equal(leaseReleases, 1, mismatch.name + ': rejected resume must release its lease');
   }
 });
+
+
+test('reconciles only the exact running operation when its durable approval record is no longer available', async () => {
+  const ExecutionContext = require('../../../../src/core/execution/execution-context');
+  const context = new ExecutionContext({
+    requestId: 'request-started-operation-reconciliation',
+    input: 'resume an already-started guarded write',
+    executionId: 'execution-started-operation-reconciliation',
+    tenantId: 'tenant-a'
+  });
+  context.start();
+  context.transitionAgentTo(AgentState.LIFECYCLE.PLANNING);
+  context.transitionAgentTo(AgentState.LIFECYCLE.VALIDATING);
+  context.setPlan({
+    intent: 'test.started-operation-reconciliation',
+    steps: [{ step: 1, tool: 'danger.write', input: {}, dependsOn: null }]
+  });
+  context.metadata.planRevision = 1;
+  context.metadata.pendingStepInputs = { 1: { tool: 'danger.write', operationId: 'operation-exact-1' } };
+  context.steps = [{ status: 'running', step: 1, planRevision: 1, tool: 'danger.write' }];
+  context.transitionAgentTo(AgentState.LIFECYCLE.EXECUTING);
+  const snapshot = context.snapshot();
+
+  let executionStarted = false;
+  let authorizationCheckpointed = false;
+  let leaseReleases = 0;
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {},
+    agentExecutionCoordinator: {
+      run: async ({ context: resumedContext }) => {
+        executionStarted = true;
+        const authorization = resumedContext.events.find(event => event.type === 'approval.resume.authorized');
+        assert.ok(authorization);
+        assert.equal(authorization.data.source, 'started_operation_reconciliation');
+        assert.equal(authorization.data.operationId, 'operation-exact-1');
+        assert.ok(authorizationCheckpointed, 'authorization must be durable before AgentLoop');
+        resumedContext.transitionAgentTo(AgentState.LIFECYCLE.OBSERVING);
+        resumedContext.transitionAgentTo(AgentState.LIFECYCLE.EVALUATING);
+        return {
+          loopResult: { result: { reconciled: true }, evaluation: { success: true } },
+          replanningDecision: { toJSON: () => ({ outcome: 'done' }) }
+        };
+      }
+    },
+    recoveryCoordinator: { fail: async () => { throw new Error('successful reconciliation must not enter recovery'); } },
+    persistence: {
+      executions: { findById: async () => null },
+      checkpoints: {
+        findLatest: async () => ({ checkpointId: 'checkpoint-started-operation', sequence: 2, snapshot }),
+        acquireResumeLease: async () => ({ leaseId: 'lease-started-operation' }),
+        renewResumeLease: async () => ({ leaseId: 'lease-started-operation' }),
+        releaseResumeLease: async () => { leaseReleases += 1; }
+      }
+    },
+    persistenceCoordinator: {
+      checkpoint: async (_context, _mode, reason) => {
+        if (reason === 'approval_resume_authorized') authorizationCheckpointed = true;
+      },
+      persistExecution: async resumedContext => resumedContext.snapshot(),
+      persistEvents: async () => []
+    },
+    approvalService: { findReusable: async () => null },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    tenantId: 'tenant-a',
+    maxInputChars: 1000
+  });
+
+  const result = await coordinator.resume('execution-started-operation-reconciliation');
+  assert.equal(result.resumed, true);
+  assert.equal(result.execution.status, 'completed');
+  assert.equal(executionStarted, true);
+  assert.equal(authorizationCheckpointed, true);
+  assert.equal(leaseReleases, 1);
+});

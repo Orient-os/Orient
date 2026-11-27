@@ -638,7 +638,7 @@ test('Postgres execution terminal transition is compare-and-set protected agains
   assert.deepEqual(db.calls[1].values.slice(0, 2), ['exec-terminal', 'tenant-a']);
 });
 
-test('Postgres execution terminal retry returns the durable winner without rewriting it', async () => {
+test('Postgres execution terminal retry rejects a different result without rewriting it', async () => {
   const committed = {
     executionId: 'exec-terminal-retry',
     tenantId: 'tenant-a',
@@ -649,12 +649,13 @@ test('Postgres execution terminal retry returns the durable winner without rewri
   const db = fakeDb([{ rows: [{ payload: committed }], rowCount: 1 }]);
   const repo = new PostgresExecutionRepository(db);
 
-  const result = await repo.update('exec-terminal-retry', {
-    status: 'completed',
-    result: { winner: 'stale-retry' }
-  }, { tenantId: 'tenant-a' });
-
-  assert.deepEqual(result.result, { winner: 'completed' });
+  await assert.rejects(
+    () => repo.update('exec-terminal-retry', {
+      status: 'completed',
+      result: { winner: 'stale-retry' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+  );
   assert.equal(db.calls.length, 1);
 });
 

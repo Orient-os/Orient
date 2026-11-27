@@ -1,6 +1,7 @@
 'use strict';
 
 const test = require('node:test');
+const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
@@ -127,4 +128,12 @@ test('project verifier reports an empty check set as failed, not passed', async 
   assert.equal(verification.passed, 0);
   assert.equal(verification.failed, 0);
   assert.equal(verification.definitionOfDoneSatisfied, false);
+});
+
+
+test('owner dashboard visibly renders the truthful concurrency limitation from the approval summary', () => {
+  const source = fs.readFileSync(require.resolve('../../../../../src/interfaces/http/owner-dashboard.js'), 'utf8');
+  assert.match(source, /summary\.reviewNotice/);
+  assert.match(source, /card\.append\(reviewNotice\)/);
+  assert.match(source, /expectedContentSha256 !== 'string' \|\| !\/\^\[a-f0-9\]\{64\}\$\/i\.test/);
 });

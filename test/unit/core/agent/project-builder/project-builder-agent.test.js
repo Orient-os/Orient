@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 const test = require('node:test');
 const assert =
   require('node:assert/strict');
@@ -423,11 +424,11 @@ test('verification engine passes only when all checks pass', async () => {
       checks: [
         {
           id: 'tests',
-          run: async () => true
+          run: async () => ({ passed: true })
         },
         {
           id: 'build',
-          run: async () => true
+          run: async () => ({ passed: true })
         }
       ]
     });
@@ -473,11 +474,11 @@ test('verification engine fails when a check fails', async () => {
       checks: [
         {
           id: 'tests',
-          run: async () => true
+          run: async () => ({ passed: true })
         },
         {
           id: 'build',
-          run: async () => false
+          run: async () => ({ passed: false })
         }
       ]
     });
@@ -1177,7 +1178,8 @@ test('project modifier applies create and update changes together', async () => 
         {
           action: 'update',
           path: updatedFile,
-          content: 'after'
+          content: 'after',
+          expectedContentSha256: crypto.createHash('sha256').update("before").digest('hex')
         }
       ]
     });
@@ -1458,7 +1460,8 @@ test(
             {
               action: 'update',
               path: 'tmp/second.txt',
-              content: '2'
+              content: '2',
+              expectedContentSha256: crypto.createHash('sha256').update("original").digest('hex')
             }
           ]
         }),
@@ -1652,7 +1655,8 @@ test(
             {
               action: 'update',
               path: 'tmp/existing.txt',
-              content: 'changed'
+              content: 'changed',
+              expectedContentSha256: crypto.createHash('sha256').update("original").digest('hex')
             },
             {
               action: 'create',
@@ -1754,7 +1758,8 @@ test(
             {
               action: 'update',
               path: 'tmp/existing.txt',
-              content: 'changed'
+              content: 'changed',
+              expectedContentSha256: crypto.createHash('sha256').update("original").digest('hex')
             },
             {
               action: 'create',

@@ -407,7 +407,7 @@ class OrientRuntime {
 
   assertReady(operation) {
     if (this.lifecycleState === 'READY' && this.ready === true) return true;
-    const stopped = this.lifecycleState === 'STOPPING' || this.lifecycleState === 'STOPPED';
+    const stopped = this.lifecycleState === 'STOPPED';
     throw Object.assign(new Error(`Runtime is not ready for ${operation || 'this operation'}`), {
       code: stopped ? 'RUNTIME_STOPPED' : 'RUNTIME_NOT_READY',
       state: this.lifecycleState,

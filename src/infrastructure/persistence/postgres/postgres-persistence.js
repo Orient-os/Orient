@@ -2,6 +2,17 @@ const crypto = require('crypto');
 
 const TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled'];
 
+function terminalOutcome(execution) {
+  return {
+    status: execution.status,
+    result: execution.result ?? null,
+    error: execution.error ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null
+  };
+}
+
 function terminalConflict(currentStatus, requestedStatus) {
   const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
   error.code = 'EXECUTION_TERMINAL_CONFLICT';
@@ -173,10 +184,10 @@ class PostgresExecutionRepository {
       if (!selected.rows.length) return null;
       const current = selected.rows[0].payload;
       if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
-        if (patch.status && patch.status !== current.status) {
-          throw terminalConflict(current.status, patch.status);
-        }
-        return current;
+        const requested = { ...current, ...patch, id: current.id, executionId: current.executionId };
+        if (requested.status === current.status &&
+            isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+        throw terminalConflict(current.status, requested.status);
       }
       if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
       const updated = {
@@ -211,10 +222,10 @@ class PostgresExecutionRepository {
       if (!latest.rows.length) return null;
       const latestPayload = latest.rows[0].payload;
       if (TERMINAL_EXECUTION_STATUSES.includes(latestPayload.status)) {
-        if (patch.status && patch.status !== latestPayload.status) {
-          throw terminalConflict(latestPayload.status, patch.status);
-        }
-        return latestPayload;
+        const requested = { ...latestPayload, ...patch, id: latestPayload.id, executionId: latestPayload.executionId };
+        if (requested.status === latestPayload.status &&
+            isDeepStrictEqual(terminalOutcome(latestPayload), terminalOutcome(requested))) return latestPayload;
+        throw terminalConflict(latestPayload.status, requested.status);
       }
       if (latestPayload.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return latestPayload;
       return latestPayload;

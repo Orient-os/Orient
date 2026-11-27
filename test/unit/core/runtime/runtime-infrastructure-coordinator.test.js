@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const createPersistence = require('../../../../src/infrastructure/persistence/persistence-factory');
 
 const RuntimeInfrastructureCoordinator =
   require('../../../../src/core/runtime/runtime-infrastructure-coordinator');
@@ -271,4 +276,47 @@ test('concrete persistence runtime defers startup side effects until interface v
   await runtime.start();
   assert.equal(quotaInitializations, 1);
   await runtime.shutdown({ cancelQueued: false });
+});
+
+
+test('ephemeral-only runtime never writes workflow events through the persistence adapter', async t => {
+  const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-ephemeral-workflow-'));
+  t.after(() => fs.rmSync(dataDirectory, { recursive: true, force: true }));
+
+  const persistenceRuntime = createPersistence({
+    persistenceMode: 'json',
+    persistenceProfile: 'local',
+    enabledPersistenceCapabilities: ['workflow.ephemeral'],
+    agentDataDirectory: dataDirectory
+  });
+  const persistenceCapabilities = persistenceRuntime.verify();
+  const runtime = new (require('../../../../src/core/runtime/orient-runtime'))({
+    toolRegistry: { requireAuthorization() {} },
+    agentOrchestrator: {
+      async plan() {
+        return { plan: { steps: [] }, validation: { valid: true, steps: [] } };
+      }
+    },
+    persistence: persistenceRuntime.adapter,
+    persistenceCapabilities
+  });
+  t.after(async () => {
+    await runtime.shutdown({ cancelQueued: false });
+    await persistenceRuntime.close();
+  });
+
+  runtime.workflowExecutionCoordinator.executeRequest = async () => ({ completed: true });
+
+  assert.equal(persistenceCapabilities.capabilities['workflow.durable'].enabled, false);
+  assert.equal(persistenceCapabilities.capabilities['workflow.ephemeral'].enabled, true);
+  assert.equal(runtime.infrastructureCoordinator.missionEventSink, null);
+  assert.equal(runtime.workflowExecutionCoordinator.missionEventSink, null);
+  assert.equal(runtime.workflowExecutionCoordinator.persistence, null);
+
+  const result = await runtime.executeWorkflow('ephemeral workflow request');
+
+  assert.deepEqual(result, { completed: true });
+  assert.deepEqual(persistenceRuntime.adapter.events.findAll(), []);
+  assert.equal(persistenceRuntime.adapter.workflows, undefined);
+  assert.equal(persistenceRuntime.adapter.workflowLeases, undefined);
 });

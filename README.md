@@ -131,6 +131,8 @@ The first owner sign-in requires the configured bootstrap password. Complete the
 
 Set `ORIENT_PERSISTENCE=postgres` and `ORIENT_DATABASE_URL` (or `DATABASE_URL`) in your local environment. Use a dedicated development/test database and least-privilege credentials. Never commit real connection strings or credentials.
 
+Persistence capabilities are opt-in and are not enabled just because an adapter supports them. Set `ORIENT_PERSISTENCE_CAPABILITIES` to a comma-separated list of required capabilities, for example `workflow.durable,approval.durable`. Available names are `workflow.durable`, `workflow.ephemeral`, `approval.durable`, `execution.resumeLease`, `worker.fencing`, and `execution.cancellation`. The selected adapter/profile must support each requested capability and declare its required guarantees; otherwise startup fails closed. Leave the variable empty to keep all optional capabilities disabled.
+
 A sample environment file is provided in [`.env.example`](.env.example). Copy it to `.env` locally; `.env` is ignored by Git.
 
 ## Repository map

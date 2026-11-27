@@ -17,6 +17,7 @@ test('persistence factory defaults to local JSON without database configuration'
   });
 
   assert.equal(runtime.adapter.health().adapter, 'json');
+  assert.equal(runtime.resolvedCapabilities.capabilities['execution.cancellation'].enabled, false);
   await runtime.close();
 });
 
@@ -41,7 +42,7 @@ test('persistence factory does not silently downgrade PostgreSQL mode', () => {
 });
 
 
-test('JSON persistence passes the trusted preflight and initialized adapter contract', () => {
+test('JSON persistence passes the trusted preflight and constructed adapter interface contract', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-persistence-contract-'));
   try {
     const runtime = createPersistence({
@@ -146,7 +147,17 @@ test('SQLite default configuration does not request unsupported ephemeral workfl
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), {
     enabled: [],
-    durable: true,
+    durable: false,
     ephemeral: false
   });
+});
+
+
+test('JSON persistence exposes no durable workflow repositories', async t => {
+  const agentDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-json-ephemeral-'));
+  t.after(() => fs.rmSync(agentDataDirectory, { recursive: true, force: true }));
+  const runtime = createPersistence({ persistenceMode: 'json', agentDataDirectory });
+  assert.equal(runtime.adapter.workflows, undefined);
+  assert.equal(runtime.adapter.workflowLeases, undefined);
+  await runtime.close();
 });

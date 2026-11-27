@@ -1,4 +1,7 @@
 const version = require('../version');
+const PersistenceCapabilityError = require('../persistence/contracts/persistence-capability-errors');
+const { PERSISTENCE_CONTRACT_VERSION, CORE_GUARANTEES } = require('../persistence/contracts/persistence-capability.constants');
+const { isTrustedPersistenceContract } = require('../persistence/contracts/persistence-capability-validator');
 
 const AgentLoop =
   require('../execution/agent-loop');
@@ -20,6 +23,30 @@ const AgentExecutionCoordinator = require('./agent-execution-coordinator');
 const ExecutionRecoveryCoordinator = require('./execution-recovery-coordinator');
 const RequestExecutionCoordinator = require('./request-execution-coordinator');
 const RuntimeInfrastructureCoordinator = require('./runtime-infrastructure-coordinator');
+
+function assertConcretePersistenceContract(persistence, capabilities, phase) {
+  if (!persistence || typeof persistence.health !== 'function') return;
+  const adapter = persistence.health()?.adapter || null;
+  const valid = capabilities &&
+    isTrustedPersistenceContract(capabilities) &&
+    capabilities.adapter === adapter &&
+    capabilities.contractVersion === PERSISTENCE_CONTRACT_VERSION &&
+    Object.isFrozen(capabilities) &&
+    Object.isFrozen(capabilities.capabilities) &&
+    Array.isArray(capabilities.guarantees) &&
+    CORE_GUARANTEES.every(guarantee => capabilities.guarantees.includes(guarantee));
+  if (!valid) {
+    throw new PersistenceCapabilityError({
+      code: 'PERSISTENCE_CAPABILITY_CONTRACT_REQUIRED',
+      message: 'A trusted, preflight-resolved persistence capability contract is required for concrete adapters',
+      adapter,
+      profile: capabilities?.profile || null,
+      phase,
+      expected: 'frozen-preflight-contract-with-core-guarantees',
+      actual: 'missing-or-invalid'
+    });
+  }
+}
 
 class OrientRuntime {
   constructor({
@@ -62,6 +89,8 @@ class OrientRuntime {
       );
     }
 
+    assertConcretePersistenceContract(persistence, persistenceCapabilities, 'runtime-construction');
+
     this.toolRegistry =
       toolRegistry;
 
@@ -87,9 +116,11 @@ class OrientRuntime {
           approval?.metadata?.tenantId === (tenantId || 'local'));
     };
 
+    const durableApprovalEnabled =
+      persistenceCapabilities?.capabilities?.['approval.durable']?.enabled === true;
     this.approvalService =
       approvalService ||
-      (persistence?.approvals
+      (durableApprovalEnabled && persistence?.approvals
         ? new ApprovalService({
             repository: persistence.approvals,
             tenantId: tenantId || 'local',
@@ -155,7 +186,10 @@ class OrientRuntime {
       maxToolInputChars,
       quotaPolicy,
       quotaService,
-      deferStartup: deferPersistenceStartup
+      deferStartup: deferPersistenceStartup,
+      workflowPersistenceEnabled: persistenceCapabilities
+        ? persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true
+        : true
     });
 
     this.workflowRepository = this.infrastructureCoordinator.workflowRepository;
@@ -237,6 +271,19 @@ class OrientRuntime {
   }
 
   async start() {
+    assertConcretePersistenceContract(this.persistence, this.persistenceCapabilities, 'runtime-start');
+    if (this.persistence && typeof this.persistence.health === 'function' &&
+        this.persistenceCapabilities?.interfacesVerified !== true) {
+      throw new PersistenceCapabilityError({
+        code: 'PERSISTENCE_CAPABILITY_CONTRACT_UNVERIFIED',
+        message: 'Persistence adapter interfaces must be verified before runtime startup',
+        adapter: this.persistence.health()?.adapter || null,
+        profile: this.persistenceCapabilities?.profile || null,
+        phase: 'runtime-start',
+        expected: 'interfacesVerified=true',
+        actual: this.persistenceCapabilities?.interfacesVerified ?? false
+      });
+    }
     const result = await this.infrastructureCoordinator.start();
     this.ready = true;
     return result;

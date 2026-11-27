@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { EVIDENCE } = require('../src/core/persistence/contracts/persistence-guarantee-evidence');
+const { EVIDENCE, CAPABILITY_EVIDENCE } = require('../src/core/persistence/contracts/persistence-guarantee-evidence');
 const { CORE_GUARANTEES } = require('../src/core/persistence/contracts/persistence-capability.constants');
 
 const root = path.resolve(__dirname, '..');
@@ -47,6 +47,27 @@ for (const adapter of adapters) {
       }
       if (!fileResults.has(item.file)) fileResults.set(item.file, { absolutePath, expected: [] });
       fileResults.get(item.file).expected.push({ adapter, guarantee, testName: item.testName });
+    }
+  }
+}
+
+
+for (const [adapter, capabilities] of Object.entries(CAPABILITY_EVIDENCE)) {
+  for (const [capability, guarantees] of Object.entries(capabilities)) {
+    for (const [guarantee, cases] of Object.entries(guarantees)) {
+      if (!Array.isArray(cases) || cases.length === 0) {
+        failures.push({ adapter, capability, guarantee, reason: 'optional capability guarantee has no behavioral test evidence' });
+        continue;
+      }
+      for (const item of cases) {
+        const absolutePath = path.resolve(root, item.file);
+        if (!absolutePath.startsWith(root + path.sep) || !fs.existsSync(absolutePath)) {
+          failures.push({ adapter, capability, guarantee, file: item.file, reason: 'capability evidence file is missing or escapes repository root' });
+          continue;
+        }
+        if (!fileResults.has(item.file)) fileResults.set(item.file, { absolutePath, expected: [] });
+        fileResults.get(item.file).expected.push({ adapter, capability, guarantee, testName: item.testName });
+      }
     }
   }
 }
@@ -121,6 +142,10 @@ const attestation = {
   summary: {
     adapters: adapters.length,
     guaranteesPerAdapter: CORE_GUARANTEES.length,
+    optionalCapabilities: Object.values(CAPABILITY_EVIDENCE).reduce((sum, capabilities) => sum + Object.keys(capabilities).length, 0),
+    capabilityEvidenceCases: Object.values(CAPABILITY_EVIDENCE).reduce((sum, capabilities) =>
+      sum + Object.values(capabilities).reduce((capabilitySum, guarantees) =>
+        capabilitySum + Object.values(guarantees).reduce((guaranteeSum, cases) => guaranteeSum + cases.length, 0), 0), 0),
     evidenceCases: testCount,
     passed: passedCount,
     failed: failedCount,
@@ -140,6 +165,26 @@ const attestation = {
             test.guarantee === guarantee && test.adapter === adapter)?.status || 'missing'
         };
       })
+    ]))
+  ])),
+  capabilities: Object.fromEntries(Object.entries(CAPABILITY_EVIDENCE).map(([adapter, capabilities]) => [
+    adapter,
+    Object.fromEntries(Object.entries(capabilities).map(([capability, guarantees]) => [
+      capability,
+      Object.fromEntries(Object.entries(guarantees).map(([guarantee, cases]) => [
+        guarantee,
+        cases.map(item => {
+          const file = results.find(entry => entry.file === item.file);
+          return {
+            file: item.file,
+            testName: item.testName,
+            fileSha256: file?.sha256 || null,
+            status: file?.expected.find(test => test.testName === item.testName &&
+              test.guarantee === guarantee && test.capability === capability &&
+              test.adapter === adapter)?.status || 'missing'
+          };
+        })
+      ]))
     ]))
   ])),
   files: results,

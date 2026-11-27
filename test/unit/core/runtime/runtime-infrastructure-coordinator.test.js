@@ -180,3 +180,42 @@ test('runtime rejects workflow execution when neither durable nor explicitly deg
   );
   await runtime.shutdown({ cancelQueued: false });
 });
+
+
+test('disabled durable workflow capability does not attach repositories, recover state, or initialize workflow quotas', async () => {
+  let recoveryCalls = 0;
+  let quotaCalls = 0;
+  const persistence = {
+    isAsync: true,
+    db: {},
+    events: {
+      async appendMissionEvent() {},
+      async findByAggregateId() { recoveryCalls += 1; return []; }
+    },
+    workflows: {
+      async findAll() { recoveryCalls += 1; return []; },
+      async findById() { recoveryCalls += 1; return null; },
+      async repair() { recoveryCalls += 1; return null; }
+    },
+    workflowLeases: {},
+    tenantQuotas: {
+      async ensureTenant() { quotaCalls += 1; }
+    }
+  };
+  const coordinator = new RuntimeInfrastructureCoordinator({
+    persistence,
+    tenantId: 'tenant-disabled-workflows',
+    deferStartup: true,
+    workflowPersistenceEnabled: false
+  });
+
+  assert.equal(coordinator.workflowRepository, null);
+  assert.equal(coordinator.missionEventSink, null);
+  assert.equal(coordinator.missionEventRecovery, null);
+  assert.equal(coordinator.tenantQuotaRepository, null);
+  assert.notEqual(coordinator.workflowScheduler.async, true);
+  await coordinator.start();
+  assert.equal(recoveryCalls, 0);
+  assert.equal(quotaCalls, 0);
+  await coordinator.shutdown();
+});

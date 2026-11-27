@@ -170,17 +170,20 @@ test('recovery quarantines a confirmed dead process and preserves an operator re
   }
 });
 
-test('release is ownership-bound and cannot remove a replacement lock', async () => {
+test('release refuses to remove a lock whose ownership token changed', async () => {
   const f = await fixture();
   const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
   const lease = await lock.acquire();
   try {
-    assert.equal(typeof lease.release, 'function');
-    await lease.release();
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
+    owner.token = '00000000-0000-4000-8000-000000000000';
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\\n', { mode: 0o600 });
     await assert.rejects(
-      () => fs.access(lock.lockPath),
-      { code: 'ENOENT' }
+      () => lease.release(),
+      { code: 'PROJECT_WORKSPACE_LOCK_OWNERSHIP_LOST' }
     );
+    await fs.access(lock.lockPath);
   } finally {
     await fs.rm(f.root, { recursive: true, force: true });
   }

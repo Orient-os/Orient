@@ -295,3 +295,34 @@ test('never applies the Android system-ancestor exception on non-Android platfor
     supplementaryGroups: [10259]
   }), false);
 });
+
+test('trusts Android AID_SYSTEM ownership only for exact canonical platform ancestors', () => {
+  const predicate = ensurePrivateStorageDirectory.isTrustedAndroidSystemOwnerAncestor;
+  const stats = { uid: 1000n, gid: 1000n, mode: 0o40771n };
+
+  for (const directory of ['/data', '/data/data', '/data/user/0']) {
+    assert.equal(predicate(directory, stats, { platform: 'android' }), true, directory);
+  }
+
+  for (const directory of [
+    '/data/user',
+    '/data/user/10',
+    '/data/local/tmp',
+    '/storage/emulated/0',
+    '/system',
+    '/vendor'
+  ]) {
+    assert.equal(predicate(directory, stats, { platform: 'android' }), false, directory);
+  }
+
+  assert.equal(predicate('/data', { ...stats, uid: 0n }, { platform: 'android' }), false);
+  assert.equal(predicate('/data', { ...stats, gid: 10259n }, { platform: 'android' }), false);
+  assert.equal(predicate('/data', stats, { platform: 'linux' }), false);
+});
+
+test('AID_SYSTEM is never included in the default global trusted-owner set', () => {
+  const owners = ensurePrivateStorageDirectory.defaultTrustedOwners(10259n);
+  assert.equal(owners.has(0n), true);
+  assert.equal(owners.has(10259n), true);
+  assert.equal(owners.has(1000n), false);
+});

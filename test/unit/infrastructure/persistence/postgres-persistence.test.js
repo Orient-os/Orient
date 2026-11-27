@@ -709,3 +709,28 @@ test('Postgres execution terminal compare-and-set rejects a stale conflicting wr
   );
   assert.match(db.calls[1].text, /NOT IN \\(\'completed\', \'failed\', \'cancelled\'\\)/);
 });
+
+
+test('Postgres execution identity cannot be rebound by updates', async () => {
+  const current = {
+    id: 'stable-id',
+    executionId: 'stable-execution',
+    requestId: 'stable-request',
+    goalId: 'stable-goal',
+    parentExecutionId: 'stable-parent',
+    executionVersion: 4,
+    tenantId: 'tenant-a',
+    userId: 'owner-a',
+    workspaceId: 'workspace-a',
+    metadata: { tenantId: 'tenant-a', userId: 'owner-a', workspaceId: 'workspace-a' },
+    status: 'running'
+  };
+  const db = fakeDb([{ rows: [{ payload: current }], rowCount: 1 }]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('stable-execution', { requestId: 'replacement-request' }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+  );
+  assert.equal(db.calls.length, 1);
+});

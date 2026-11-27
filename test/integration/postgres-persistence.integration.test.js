@@ -1861,3 +1861,54 @@ test('PostgreSQL owner workflow writes reject active worker dispatch claims', as
   }
 });
 
+
+
+test('PostgreSQL terminal execution snapshots are immutable and exact retries are idempotent', async () => {
+  const executionId = 'terminal-integrity-' + randomUUID();
+  const tenantId = 'tenant-terminal-integrity';
+  const terminalSnapshot = {
+    status: 'failed',
+    completedAt: '2026-11-27T10:00:00.000Z',
+    agentState: { errors: [{ code: 'ORIGINAL_FAILURE', message: 'original' }] },
+    result: null
+  };
+
+  await persistence.executions.insert({
+    executionId,
+    requestId: 'request-' + executionId,
+    status: 'running',
+    metadata: { tenantId },
+    agentState: { errors: [] },
+    result: null
+  }, { tenantId });
+
+  try {
+    const committed = await persistence.executions.update(executionId, terminalSnapshot, { tenantId });
+    assert.equal(committed.status, 'failed');
+
+    const exactRetry = await persistence.executions.update(executionId, terminalSnapshot, { tenantId });
+    assert.deepEqual(exactRetry.agentState, terminalSnapshot.agentState);
+
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        ...terminalSnapshot,
+        agentState: { errors: [{ code: 'REPLACED_FAILURE', message: 'tampered' }] }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+    );
+
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        status: 'completed',
+        result: { shouldNotReplaceFailure: true }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+    );
+
+    const persisted = await persistence.executions.findById(executionId, { tenantId });
+    assert.equal(persisted.status, 'failed');
+    assert.deepEqual(persisted.agentState, terminalSnapshot.agentState);
+  } finally {
+    await persistence.executions.deleteById(executionId, { tenantId });
+  }
+});

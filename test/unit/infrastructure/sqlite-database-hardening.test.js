@@ -232,7 +232,8 @@ test('committed WAL data survives abrupt process termination and restart', async
     const db = new SqliteDatabase(filePath);
     try {
       const rows = db.query('SELECT text FROM memories WHERE memory_id = ?', ['crash-recovery']);
-      assert.deepEqual(rows, [{ text: 'durable' }]);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].text, 'durable');
     } finally { db.close(); }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

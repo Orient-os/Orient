@@ -60,9 +60,14 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
     expectedContentSha256: crypto.createHash('sha256').update('before').digest('hex')
   };
   return spawn(process.execPath, ['-e', source, workspaceRoot, receiptDirectory, operationId, mode, JSON.stringify(proposal)], {
-    cwd: path.resolve(__dirname, '../../../..'),
+    cwd: path.resolve(__dirname, '../..'),
     stdio: ['pipe', 'pipe', 'pipe']
   });
+}
+
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', resolve));
 }
 
 function nextLine(child) {
@@ -86,8 +91,10 @@ function nextLine(child) {
 }
 
 test('canonical project tool holds the workspace lock through receipt commit and revalidates after release', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-transaction-'));
-  const receiptDirectory = path.join(root, 'agent-data', 'project-operation-receipts');
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-transaction-'));
+  const root = path.join(base, 'workspace');
+  const receiptDirectory = path.join(base, 'agent-data', 'project-operation-receipts');
+  await fs.mkdir(root);
   await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(root, 'target.txt'), 'before');
   let holder;
@@ -100,23 +107,23 @@ test('canonical project tool holds the workspace lock through receipt commit and
     contender = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-contender' });
     const blocked = JSON.parse(await nextLine(contender));
     assert.equal(blocked.error, 'PROJECT_WORKSPACE_MUTATION_LOCKED');
-    await new Promise(resolve => contender.once('exit', resolve));
+    await waitForExit(contender);
 
     holder.stdin.write('continue');
     const committed = JSON.parse(await nextLine(holder));
     assert.equal(committed.result.status, 'verified');
-    await new Promise(resolve => holder.once('exit', resolve));
+    await waitForExit(holder);
 
     stale = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-stale' });
     const staleResult = JSON.parse(await nextLine(stale));
     assert.equal(staleResult.result.status, 'failed');
     assert.equal(staleResult.result.error.code, 'CHANGE_PRECONDITION_FAILED');
-    await new Promise(resolve => stale.once('exit', resolve));
+    await waitForExit(stale);
     assert.equal(await fs.readFile(path.join(root, 'target.txt'), 'utf8'), 'after');
   } finally {
     for (const child of [holder, contender, stale]) {
       if (child && child.exitCode === null) child.kill('SIGKILL');
     }
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(base, { recursive: true, force: true });
   }
 });

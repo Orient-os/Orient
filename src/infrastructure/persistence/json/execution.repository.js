@@ -6,14 +6,10 @@ const { isDeepStrictEqual } = require('node:util');
 const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function terminalOutcome(execution) {
-  return {
-    status: execution.status,
-    result: execution.result ?? null,
-    error: execution.error ?? null,
-    completedAt: execution.completedAt ?? null,
-    cancellationRequested: Boolean(execution.cancellationRequested),
-    cancellationReason: execution.cancellationReason ?? null
-  };
+  // Compare the complete durable execution snapshot, excluding only storage metadata.
+  // This includes failure details, steps, observations, agent state, and terminal events.
+  const { updatedAt, ...outcome } = execution;
+  return outcome;
 }
 
 function terminalConflict(currentStatus, requestedStatus) {

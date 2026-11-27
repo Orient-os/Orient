@@ -1,5 +1,7 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const os = require('node:os');
+const WorkspaceMutationLock = require('../../infrastructure/execution/workspace-mutation-lock');
 const ToolInterface = require('../../core/tools/tool.interface');
 const ProjectBuilderAgent = require('../../core/agent/project-builder/project-builder-agent');
 const ProjectImprovementAnalyzer = require('../../core/agent/project-builder/change-proposal/project-improvement-analyzer');
@@ -39,6 +41,15 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
     idempotency: 'reconcilable',
     execute: async (input = {}, context = {}) => {
       const proposalResult = input && input.proposals ? input : input;
+
+      const lockDirectory = path.join(
+        operationReceiptStore?.directory || path.join(os.tmpdir(), 'orient-workspace-mutation-state'),
+        'workspace-locks'
+      );
+      const mutationLock = new WorkspaceMutationLock({ workspaceRoot: projectRoot, lockDirectory });
+      const workspaceLease = await mutationLock.acquire();
+      let retainWorkspaceLock = false;
+      try {
       const proposals = Array.isArray(proposalResult.proposals) ? proposalResult.proposals : [];
       if (proposals.length === 0) throw new Error('No approved change proposals were supplied');
       const operationId = typeof context.operationId === 'string' ? context.operationId : '';
@@ -104,10 +115,12 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
 
       // Persist a pending intent immediately before the mutation boundary. If the
       // process crashes before a verified receipt is durable, retries fail closed.
+      let intentCreated = false;
       if (operationReceiptStore) {
         const reservation = operationReceiptStore.beginIntent({
           operationId, tenantId, workspaceId, changeSetHash
         });
+        intentCreated = reservation.created;
         if (!reservation.created) {
           const error = new Error('A prior project operation has no verified receipt; outcome is unknown');
           error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
@@ -125,12 +138,27 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       const serialized = typeof result?.toJSON === 'function' ? result.toJSON() : result;
       if (operationReceiptStore && serialized?.status === 'verified' &&
           serialized?.verification?.status === 'passed' && serialized?.verification?.failed === 0) {
-        operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized });
+        try {
+          operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized });
+        } catch (error) {
+          retainWorkspaceLock = true;
+          throw error;
+        }
         // Keep the durable intent as an audit marker. A verified receipt takes
         // precedence during reconciliation; pathname deletion is avoided because
         // checking identity and unlinking are not atomic.
       }
+      if (intentCreated && serialized?.status === 'failed' &&
+          serialized?.rollback?.rolledBack !== true &&
+          serialized?.error?.code !== 'CHANGE_PRECONDITION_FAILED') {
+        // Mutation outcome is not proven safe. Keep the durable workspace lock
+        // until an operator inspects the pending intent and recovers explicitly.
+        retainWorkspaceLock = true;
+      }
       return result;
+      } finally {
+        if (!retainWorkspaceLock) await workspaceLease.release();
+      }
     },
     reconcile: async (input = {}, context = {}) => {
       const proposals = Array.isArray(input.proposals) ? input.proposals : [];

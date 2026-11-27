@@ -40,12 +40,9 @@ test('unsupported optional capabilities cannot be enabled', () => {
   );
 });
 
-test('SQLite is rejected because terminal idempotency protection is not yet guaranteed', () => {
-  assert.throws(
-    () => resolvePersistenceCapabilities({ adapter: 'sqlite', profile: 'local' }),
-    error => error.code === 'PERSISTENCE_GUARANTEE_UNSATISFIED' &&
-      error.guarantee === 'idempotency.terminal.protection'
-  );
+test('SQLite satisfies the core terminal idempotency guarantee after compare-and-set hardening', () => {
+  const resolved = resolvePersistenceCapabilities({ adapter: 'sqlite', profile: 'local' });
+  assert.ok(resolved.guarantees.includes('idempotency.terminal.protection'));
 });
 
 test('unknown adapter and unknown profile fail closed', () => {

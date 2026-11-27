@@ -1149,3 +1149,91 @@ test('uses the reserved execution identity as the durable ExecutionContext ident
   assert.equal(observedExecutionId, 'reserved-execution-identity-0001');
   assert.equal(result.execution.executionId, 'reserved-execution-identity-0001');
 });
+
+
+test('approval challenge summarizes the complete proposed change while bounding displayed content', async () => {
+  let issuedApproval = null;
+  const content = 'x'.repeat(32001);
+  const changes = [
+    {
+      action: 'update',
+      path: 'p'.repeat(513),
+      expectedContentSha256: 'b'.repeat(64),
+      content
+    },
+    null,
+    { action: 'delete', path: 'unsafe-action', content: 'review me' },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      action: 'create',
+      path: 'created-' + index,
+      content: 'line one\\nline two'
+    })),
+    { action: 'create', path: 'outside-summary-limit', content: 'not included' }
+  ];
+
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {
+      plan: async () => ({
+        plan: { intent: 'test.approval-summary', steps: [{ step: 1, tool: 'project.execute_change' }] },
+        validation: { valid: true, steps: [{ step: 1, tool: 'project.execute_change' }] }
+      })
+    },
+    agentExecutionCoordinator: {
+      run: async ({ context }) => {
+        throw Object.assign(new Error('approval required'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: {
+            executionId: context.executionId,
+            step: 1,
+            planRevision: 1,
+            planSha256: 'a'.repeat(64),
+            tool: 'project.execute_change',
+            capability: 'workspace.write',
+            tenantId: 'tenant-a',
+            input: { changeSet: { changes } }
+          }
+        });
+      }
+    },
+    recoveryCoordinator: { fail: async () => { throw new Error('approval must not enter failure recovery'); } },
+    persistence: null,
+    persistenceCoordinator: {
+      persistExecution: async () => ({}),
+      checkpoint: async () => {},
+      persistEvents: async () => {}
+    },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    approvalService: {
+      issue: async args => {
+        issuedApproval = args;
+        return { approvalId: 'approval-summary-test' };
+      }
+    },
+    tenantId: 'tenant-a',
+    maxInputChars: 1000
+  });
+
+  await assert.rejects(
+    coordinator.execute('review proposed project changes'),
+    error => error.code === 'APPROVAL_REQUIRED' &&
+      error.executionContext.approvalId === 'approval-summary-test'
+  );
+
+  const summary = issuedApproval.metadata.approvalSummary;
+  assert.equal(summary.kind, 'file_change');
+  assert.equal(summary.changeCount, changes.length);
+  assert.equal(summary.changes.length, 10);
+  assert.equal(summary.changes[0].action, 'update');
+  assert.equal(summary.changes[0].path.length, 512);
+  assert.equal(summary.changes[0].expectedContentSha256, 'b'.repeat(64));
+  assert.equal(summary.changes[0].proposedContentSha256,
+    require('node:crypto').createHash('sha256').update(content, 'utf8').digest('hex'));
+  assert.equal(summary.changes[0].contentBytes, Buffer.byteLength(content, 'utf8'));
+  assert.equal(summary.changes[0].lineCount, 1);
+  assert.equal(summary.changes[0].proposedContent.length, 32000);
+  assert.equal(summary.changes[0].contentTruncated, true);
+  assert.equal(summary.changes[1].action, 'invalid');
+  assert.equal(summary.changes[2].action, 'invalid');
+  assert.match(summary.reviewNotice, /full proposed content/i);
+});

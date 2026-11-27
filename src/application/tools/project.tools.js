@@ -169,7 +169,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       if (proposals.length === 0) return { status: 'conflict', reason: 'no_change_proposals' };
       const operationId = typeof context.operationId === 'string' ? context.operationId : '';
       const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
-      const workspaceId = crypto.createHash('sha256').update(path.resolve(projectRoot), 'utf8').digest('hex');
+      const workspaceId = crypto.createHash('sha256').update(fs.realpathSync.native(path.resolve(projectRoot)), 'utf8').digest('hex');
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})
       }))), 'utf8').digest('hex');

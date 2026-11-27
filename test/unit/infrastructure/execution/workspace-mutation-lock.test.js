@@ -121,6 +121,55 @@ test('different workspace identities are isolated even when they share lock stor
   }
 });
 
+test('recovery refuses a live owner and requires an explicit operator decision', async () => {
+  const f = await fixture();
+  const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+  let lease;
+  try {
+    lease = await lock.acquire();
+    assert.throws(
+      () => lock.recover({
+        expectedToken: lease.metadata.token,
+        operatorId: 'test-operator',
+        reason: 'verify active owner is never reclaimed'
+      }),
+      { code: 'PROJECT_WORKSPACE_LOCK_OWNER_ACTIVE' }
+    );
+  } finally {
+    if (lease) await lease.release();
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('recovery quarantines a confirmed dead process and preserves an operator receipt', async () => {
+  const f = await fixture();
+  let worker;
+  try {
+    worker = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory, hold: true });
+    const first = await readFirstLine(worker);
+    assert.equal(first.acquired, true);
+    worker.kill('SIGKILL');
+    await new Promise(resolve => worker.once('exit', resolve));
+
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const recovered = lock.recover({
+      expectedToken: first.metadata.token,
+      operatorId: 'incident-operator',
+      reason: 'worker process was terminated and workspace was reviewed'
+    });
+    assert.equal(recovered.recovered, true);
+    const record = JSON.parse(await fs.readFile(path.join(recovered.quarantinePath, 'recovery.json'), 'utf8'));
+    assert.equal(record.operatorId, 'incident-operator');
+    assert.equal(record.owner.token, first.metadata.token);
+
+    const nextLease = await lock.acquire();
+    await nextLease.release();
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('release is ownership-bound and cannot remove a replacement lock', async () => {
   const f = await fixture();
   const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });

@@ -2,6 +2,15 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function terminalConflict(currentStatus, requestedStatus) {
+  const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
+  error.code = 'EXECUTION_TERMINAL_CONFLICT';
+  error.status = 409;
+  return error;
+}
+
 class ExecutionRepository {
   constructor(filePath, { lockTimeoutMs = 30_000 } = {}) {
     if (!filePath) {
@@ -306,8 +315,16 @@ class ExecutionRepository {
       if (tenantId && current.metadata?.tenantId !== tenantId && !(tenantId === 'local' && !current.metadata?.tenantId)) return null;
       if (tenantId && patch.metadata?.tenantId && patch.metadata.tenantId !== tenantId) throw new Error('Execution tenant mismatch');
 
+      // The lock makes this read/decision/write one atomic terminal transition.
+      // Once terminal, execution state is immutable; retries return the winner.
+      if (TERMINAL_EXECUTION_STATUSES.has(current.status)) {
+        if (patch.status && patch.status !== current.status) {
+          throw terminalConflict(current.status, patch.status);
+        }
+        return current;
+      }
+
       // A durable cancellation request wins over a later terminal completion write.
-      // This is the atomic outcome boundary for JSON persistence.
       if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) {
         return current;
       }

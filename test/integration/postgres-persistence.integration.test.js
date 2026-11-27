@@ -1912,3 +1912,46 @@ test('PostgreSQL terminal execution snapshots are immutable and exact retries ar
     await persistence.executions.deleteById(executionId, { tenantId });
   }
 });
+
+
+test('PostgreSQL execution identity cannot be rebound across durable updates', async () => {
+  const executionId = 'identity-integrity-' + randomUUID();
+  const tenantId = 'tenant-identity-integrity';
+  await persistence.executions.insert({
+    executionId,
+    requestId: 'request-original',
+    goalId: 'goal-original',
+    parentExecutionId: 'parent-original',
+    executionVersion: 3,
+    userId: 'owner-original',
+    workspaceId: 'workspace-original',
+    status: 'running',
+    metadata: {
+      tenantId,
+      userId: 'owner-original',
+      workspaceId: 'workspace-original'
+    }
+  }, { tenantId });
+
+  try {
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        requestId: 'request-rebound'
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+    );
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        metadata: { tenantId: 'tenant-attacker' }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'metadata.tenantId'
+    );
+    const persisted = await persistence.executions.findById(executionId, { tenantId });
+    assert.equal(persisted.requestId, 'request-original');
+    assert.equal(persisted.goalId, 'goal-original');
+    assert.equal(persisted.executionVersion, 3);
+    assert.equal(persisted.metadata.tenantId, tenantId);
+  } finally {
+    await persistence.executions.deleteById(executionId, { tenantId });
+  }
+});

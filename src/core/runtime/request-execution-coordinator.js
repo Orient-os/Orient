@@ -40,7 +40,7 @@ function createApprovalSummary(tool, input) {
     kind: 'file_change',
     changeCount: rawChanges.length,
     changes,
-    reviewNotice: 'Review every path and the full proposed content before approving. Updates are guarded by the expected current-file SHA-256.'
+    reviewNotice: 'تنبيه مهم: بصمة SHA-256 للملف الحالي تتحقق من أن المقترح لم يصبح قديمًا قبل بدء التعديل، لكنها لا تقفل الملف ولا تمنع الكتابة المتزامنة من عملية أخرى. لا توجد حتى الآن آلية قفل عابرة للعمليات؛ لذلك لا تعتبر هذه البصمة ضمانًا ضد سباق الكتابة.'
   };
 }
 

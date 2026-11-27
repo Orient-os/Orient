@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const os = require('node:os');
+const fs = require('node:fs');
 const WorkspaceMutationLock = require('../../infrastructure/execution/workspace-mutation-lock');
 const ToolInterface = require('../../core/tools/tool.interface');
 const ProjectBuilderAgent = require('../../core/agent/project-builder/project-builder-agent');
@@ -49,6 +50,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       const mutationLock = new WorkspaceMutationLock({ workspaceRoot: projectRoot, lockDirectory });
       const workspaceLease = await mutationLock.acquire();
       let retainWorkspaceLock = false;
+      let intentCreated = false;
       try {
       const proposals = Array.isArray(proposalResult.proposals) ? proposalResult.proposals : [];
       if (proposals.length === 0) throw new Error('No approved change proposals were supplied');
@@ -59,7 +61,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         error.code = 'PROJECT_OPERATION_IDENTITY_REQUIRED';
         throw error;
       }
-      const workspaceId = crypto.createHash('sha256').update(path.resolve(projectRoot), 'utf8').digest('hex');
+      const workspaceId = mutationLock.workspaceId;
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})
       }))), 'utf8').digest('hex');
@@ -115,7 +117,6 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
 
       // Persist a pending intent immediately before the mutation boundary. If the
       // process crashes before a verified receipt is durable, retries fail closed.
-      let intentCreated = false;
       if (operationReceiptStore) {
         const reservation = operationReceiptStore.beginIntent({
           operationId, tenantId, workspaceId, changeSetHash
@@ -156,6 +157,9 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         retainWorkspaceLock = true;
       }
       return result;
+      } catch (error) {
+        if (intentCreated) retainWorkspaceLock = true;
+        throw error;
       } finally {
         if (!retainWorkspaceLock) await workspaceLease.release();
       }

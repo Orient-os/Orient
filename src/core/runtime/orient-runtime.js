@@ -47,7 +47,8 @@ class OrientRuntime {
     capabilityGovernance = null,
     approvalDecisionAuthorizer = null,
     ownerSessionAuthorizer = null,
-    deferPersistenceStartup = false
+    deferPersistenceStartup = false,
+    persistenceCapabilities = null
   }) {
     if (!toolRegistry) {
       throw new TypeError(
@@ -113,6 +114,7 @@ class OrientRuntime {
     this.persistence =
       persistence;
     this.ready = deferPersistenceStartup !== true;
+    this.persistenceCapabilities = persistenceCapabilities;
 
     this.tenantId = tenantId || 'local';
     this.userId = userId || 'local';

@@ -404,7 +404,8 @@ const runtime =
     capabilityGovernance,
     approvalDecisionAuthorizer: ({ actorId }) => ownerAuthService.isActiveSession(actorId),
     ownerSessionAuthorizer: sessionId => ownerAuthService.isActiveSession(sessionId),
-    deferPersistenceStartup: true
+    deferPersistenceStartup: true,
+    persistenceCapabilities: persistenceRuntime.resolvedCapabilities
   });
 
 const agentService =
@@ -510,6 +511,7 @@ async function start() {
   }
   if (typeof persistenceRuntime.verify === 'function') {
     persistenceRuntime.capabilities = persistenceRuntime.verify();
+    runtime.persistenceCapabilities = persistenceRuntime.capabilities;
   }
   await accessAuditRepository.initialize();
   await runtime.start();

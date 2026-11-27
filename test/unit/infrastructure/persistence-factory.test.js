@@ -87,3 +87,26 @@ test('unknown requested capabilities fail closed during preflight', () => {
     error => error.code === 'PERSISTENCE_CAPABILITY_MISSING'
   );
 });
+
+
+test('persistence constructor failures return a structured initialization diagnostic', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-persistence-init-failure-'));
+  const blockedDirectory = path.join(root, 'not-a-directory');
+  fs.writeFileSync(blockedDirectory, 'file');
+  try {
+    assert.throws(
+      () => createPersistence({
+        persistenceMode: 'json',
+        persistenceProfile: 'local',
+        enabledPersistenceCapabilities: ['workflow.ephemeral'],
+        agentDataDirectory: blockedDirectory
+      }),
+      error => error.code === 'PERSISTENCE_INITIALIZATION_FAILED' &&
+        error.phase === 'initialization' &&
+        error.adapter === 'json' &&
+        error.actual === 'ENOTDIR'
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

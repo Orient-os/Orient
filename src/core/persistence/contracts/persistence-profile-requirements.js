@@ -24,8 +24,8 @@ const PROFILE_REQUIREMENTS = Object.freeze({
   postgres: Object.freeze({
     requiredGuarantees: CORE_GUARANTEES,
     optionalCapabilities: Object.freeze({
-      'workflow.durable': Object.freeze({ degradationAllowed: false, requiredGuarantees: ['workflow.state.durability'] }),
-      'workflow.ephemeral': Object.freeze({ degradationAllowed: false, requiredGuarantees: ['workflow.persistence.ephemeral'] }),
+      'workflow.durable': capabilityPolicy(false, ['workflow.state.durability']),
+      'workflow.ephemeral': capabilityPolicy(false, ['workflow.persistence.ephemeral']),
       'approval.durable': capabilityPolicy(false, ['approval.decision.atomicity']),
       'execution.resumeLease': capabilityPolicy(false, ['execution.resume.lease-ownership']),
       'worker.fencing': capabilityPolicy(false, ['worker.lease.fencing']),

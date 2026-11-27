@@ -1861,3 +1861,97 @@ test('PostgreSQL owner workflow writes reject active worker dispatch claims', as
   }
 });
 
+
+
+test('PostgreSQL terminal execution snapshots are immutable and exact retries are idempotent', async () => {
+  const executionId = 'terminal-integrity-' + randomUUID();
+  const tenantId = 'tenant-terminal-integrity';
+  const terminalSnapshot = {
+    status: 'failed',
+    completedAt: '2026-11-27T10:00:00.000Z',
+    agentState: { errors: [{ code: 'ORIGINAL_FAILURE', message: 'original' }] },
+    result: null
+  };
+
+  await persistence.executions.insert({
+    executionId,
+    requestId: 'request-' + executionId,
+    status: 'running',
+    metadata: { tenantId },
+    agentState: { errors: [] },
+    result: null
+  }, { tenantId });
+
+  try {
+    const committed = await persistence.executions.update(executionId, terminalSnapshot, { tenantId });
+    assert.equal(committed.status, 'failed');
+
+    const exactRetry = await persistence.executions.update(executionId, terminalSnapshot, { tenantId });
+    assert.deepEqual(exactRetry.agentState, terminalSnapshot.agentState);
+
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        ...terminalSnapshot,
+        agentState: { errors: [{ code: 'REPLACED_FAILURE', message: 'tampered' }] }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+    );
+
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        status: 'completed',
+        result: { shouldNotReplaceFailure: true }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+    );
+
+    const persisted = await persistence.executions.findById(executionId, { tenantId });
+    assert.equal(persisted.status, 'failed');
+    assert.deepEqual(persisted.agentState, terminalSnapshot.agentState);
+  } finally {
+    await persistence.executions.deleteById(executionId, { tenantId });
+  }
+});
+
+
+test('PostgreSQL execution identity cannot be rebound across durable updates', async () => {
+  const executionId = 'identity-integrity-' + randomUUID();
+  const tenantId = 'tenant-identity-integrity';
+  await persistence.executions.insert({
+    executionId,
+    requestId: 'request-original',
+    goalId: 'goal-original',
+    parentExecutionId: 'parent-original',
+    executionVersion: 3,
+    userId: 'owner-original',
+    workspaceId: 'workspace-original',
+    status: 'running',
+    metadata: {
+      tenantId,
+      userId: 'owner-original',
+      workspaceId: 'workspace-original'
+    }
+  }, { tenantId });
+
+  try {
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        requestId: 'request-rebound'
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+    );
+    await assert.rejects(
+      () => persistence.executions.update(executionId, {
+        metadata: { tenantId: 'tenant-attacker' }
+      }, { tenantId }),
+      error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'metadata.tenantId'
+    );
+    const persisted = await persistence.executions.findById(executionId, { tenantId });
+    assert.equal(persisted.requestId, 'request-original');
+    assert.equal(persisted.goalId, 'goal-original');
+    assert.equal(persisted.executionVersion, 3);
+    assert.equal(persisted.metadata.tenantId, tenantId);
+  } finally {
+    await persistence.executions.deleteById(executionId, { tenantId });
+  }
+});

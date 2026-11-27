@@ -608,3 +608,129 @@ test('Postgres principal-scoped reads derive a non-local tenant and reject an ex
   );
   assert.equal(db.calls.length, 1, 'a mismatched explicit tenant must fail before issuing SQL');
 });
+
+
+test('Postgres execution terminal transition is compare-and-set protected against a competing writer', async () => {
+  const committed = {
+    executionId: 'exec-terminal',
+    tenantId: 'tenant-a',
+    status: 'completed',
+    metadata: { tenantId: 'tenant-a' },
+    result: { winner: 'completed' }
+  };
+  const db = fakeDb([
+    { rows: [{ payload: { ...committed, status: 'running', result: null } }], rowCount: 1 },
+    { rows: [], rowCount: 0 },
+    { rows: [{ payload: committed }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('exec-terminal', {
+      status: 'failed',
+      result: { winner: 'failed' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT' && error.status === 409
+  );
+
+  assert.equal(db.calls.length, 3);
+  assert.ok(db.calls[1].text.includes("COALESCE(payload->>'status', 'created') NOT IN ('completed', 'failed', 'cancelled')"));
+  assert.deepEqual(db.calls[1].values.slice(0, 2), ['exec-terminal', 'tenant-a']);
+});
+
+test('Postgres execution terminal retry rejects a different result without rewriting it', async () => {
+  const committed = {
+    executionId: 'exec-terminal-retry',
+    tenantId: 'tenant-a',
+    status: 'completed',
+    metadata: { tenantId: 'tenant-a' },
+    result: { winner: 'completed' }
+  };
+  const db = fakeDb([{ rows: [{ payload: committed }], rowCount: 1 }]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('exec-terminal-retry', {
+      status: 'completed',
+      result: { winner: 'stale-retry' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+  );
+  assert.equal(db.calls.length, 1);
+});
+
+
+test('Postgres execution terminal retries are idempotent only for the same outcome', async () => {
+  const committed = {
+    executionId: 'exec-terminal', id: 'exec-terminal', tenantId: 'tenant-a',
+    status: 'completed', result: { committed: true }, error: null,
+    completedAt: '2026-11-27T10:00:00.000Z', cancellationRequested: false,
+    cancellationReason: null
+  };
+  const db = fakeDb([
+    { rows: [{ payload: committed }], rowCount: 1 },
+    { rows: [{ payload: committed }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('exec-terminal', {
+      status: 'completed', result: { committed: false }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT' && error.status === 409
+  );
+  const retry = await repo.update('exec-terminal', {
+    status: 'completed', result: { committed: true }
+  }, { tenantId: 'tenant-a' });
+  assert.deepEqual(retry.result, { committed: true });
+  assert.equal(db.calls.length, 2);
+});
+
+test('Postgres execution terminal compare-and-set rejects a stale conflicting writer', async () => {
+  const active = {
+    executionId: 'exec-race', id: 'exec-race', tenantId: 'tenant-a',
+    status: 'running', result: null, cancellationRequested: false
+  };
+  const winner = {
+    ...active, status: 'completed', result: { winner: true },
+    completedAt: '2026-11-27T10:00:00.000Z'
+  };
+  const db = fakeDb([
+    { rows: [{ payload: active }], rowCount: 1 },
+    { rows: [], rowCount: 0 },
+    { rows: [{ payload: winner }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+  await assert.rejects(
+    () => repo.update('exec-race', {
+      status: 'completed', result: { winner: false }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+  );
+  assert.ok(db.calls[1].text.includes("COALESCE(payload->>'status', 'created') NOT IN ('completed', 'failed', 'cancelled')"));
+});
+
+
+test('Postgres execution identity cannot be rebound by updates', async () => {
+  const current = {
+    id: 'stable-id',
+    executionId: 'stable-execution',
+    requestId: 'stable-request',
+    goalId: 'stable-goal',
+    parentExecutionId: 'stable-parent',
+    executionVersion: 4,
+    tenantId: 'tenant-a',
+    userId: 'owner-a',
+    workspaceId: 'workspace-a',
+    metadata: { tenantId: 'tenant-a', userId: 'owner-a', workspaceId: 'workspace-a' },
+    status: 'running'
+  };
+  const db = fakeDb([{ rows: [{ payload: current }], rowCount: 1 }]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('stable-execution', { requestId: 'replacement-request' }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+  );
+  assert.equal(db.calls.length, 1);
+});

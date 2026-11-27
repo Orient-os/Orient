@@ -403,7 +403,9 @@ const runtime =
     agentInvocationService,
     capabilityGovernance,
     approvalDecisionAuthorizer: ({ actorId }) => ownerAuthService.isActiveSession(actorId),
-    ownerSessionAuthorizer: sessionId => ownerAuthService.isActiveSession(sessionId)
+    ownerSessionAuthorizer: sessionId => ownerAuthService.isActiveSession(sessionId),
+    deferPersistenceStartup: true,
+    persistenceCapabilities: persistenceRuntime.resolvedCapabilities
   });
 
 const agentService =
@@ -507,7 +509,12 @@ async function start() {
   if (typeof persistenceRuntime.initialize === 'function') {
     await persistenceRuntime.initialize();
   }
+  if (typeof persistenceRuntime.verify === 'function') {
+    persistenceRuntime.capabilities = persistenceRuntime.verify();
+    runtime.persistenceCapabilities = persistenceRuntime.capabilities;
+  }
   await accessAuditRepository.initialize();
+  await runtime.start();
 
   server.listen(
     config.port,
@@ -564,13 +571,16 @@ async function start() {
   );
 }
 
-start().catch((error) => {
-  logger.error('ORIENT ONE startup failed', {
-    code: error?.code || 'STARTUP_FAILED',
-    message: error?.message || String(error)
-  });
+start().catch(async (error) => {
+  const diagnostic = typeof error?.toDiagnostic === 'function'
+    ? error.toDiagnostic()
+    : { code: error?.code || 'STARTUP_FAILED', message: error?.message || String(error) };
+  logger.error('ORIENT ONE startup failed', diagnostic);
+  try {
+    await runtime.shutdown({ cancelQueued: false });
+  } catch {}
   if (typeof persistenceRuntime.close === 'function') {
-    persistenceRuntime.close().catch(() => {});
+    await persistenceRuntime.close().catch(() => {});
   }
   process.exitCode = 1;
 });

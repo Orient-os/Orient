@@ -1,5 +1,50 @@
 const crypto = require('crypto');
+
+const TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled'];
+
+function terminalOutcome(execution) {
+  const terminalEvents = (Array.isArray(execution.events) ? execution.events : [])
+    .filter(event => ['execution.completed', 'execution.failed', 'execution.cancelled'].includes(event?.type))
+    .map(event => ({ type: event.type, data: event.data || {} }));
+  const failedSteps = execution.status === 'failed'
+    ? (Array.isArray(execution.steps) ? execution.steps : [])
+        .filter(step => step?.status === 'failed')
+        .map(step => ({
+          step: step.step,
+          planRevision: step.planRevision || 1,
+          tool: step.tool || null,
+          error: step.error || null
+        }))
+    : [];
+
+  const outcome = {
+    status: execution.status,
+    result: execution.result ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null,
+    terminalEvents,
+    failureDetails: execution.status === 'failed'
+      ? {
+          errors: execution.agentState?.errors || [],
+          failedSteps
+        }
+      : null
+  };
+
+  // Compare the persisted JSON representation, not transient undefined values
+  // or runtime-only object details that disappear at the storage boundary.
+  return JSON.parse(JSON.stringify(outcome));
+}
+
+function terminalConflict(currentStatus, requestedStatus) {
+  const error = new Error(`Execution is already terminal (${currentStatus}) and rejects conflicting outcome ${requestedStatus}`);
+  error.code = 'EXECUTION_TERMINAL_CONFLICT';
+  error.status = 409;
+  return error;
+}
 const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
 const { validateAcknowledgement, prepareAcknowledgement } = require('../workflow-outbox-utils');
 const { assertPersistencePrincipal } = require('../../../core/security/persistence-principal');
 const { assertWorkerPersistencePrincipal } = require('../../../core/security/worker-persistence-principal');
@@ -163,8 +208,17 @@ class PostgresExecutionRepository {
       );
       if (!selected.rows.length) return null;
       const current = selected.rows[0].payload;
+      assertExecutionIdentityUnchanged(current, patch);
+      if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
+        const requested = { ...current, ...patch, id: current.id, executionId: current.executionId };
+        if (requested.status === current.status &&
+            isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+        throw terminalConflict(current.status, requested.status);
+      }
+      if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
       const updated = {
         ...current, ...patch,
+        ...preserveExecutionIdentity(current, patch),
         ...(current.cancellationRequested ? { cancellationRequested: true, cancellationReason: current.cancellationReason || patch.cancellationReason || null } : {}),
         id: current.id,
         executionId: current.executionId,
@@ -179,6 +233,7 @@ class PostgresExecutionRepository {
          SET payload=$3, updated_at=$4
          WHERE execution_id=$1
            AND tenant_id=$2${updateOwnerClause}
+           AND COALESCE(payload->>'status', 'created') NOT IN ('completed', 'failed', 'cancelled')
            AND NOT (
              COALESCE(payload->>'cancellationRequested', 'false') = 'true'
              AND $5::text IN ('completed', 'failed')
@@ -191,7 +246,16 @@ class PostgresExecutionRepository {
         'SELECT payload FROM executions WHERE execution_id=$1 AND tenant_id=$2' + ownerClause + ' LIMIT 1',
         values
       );
-      return latest.rows.length ? latest.rows[0].payload : null;
+      if (!latest.rows.length) return null;
+      const latestPayload = latest.rows[0].payload;
+      if (TERMINAL_EXECUTION_STATUSES.includes(latestPayload.status)) {
+        const requested = { ...latestPayload, ...patch, id: latestPayload.id, executionId: latestPayload.executionId };
+        if (requested.status === latestPayload.status &&
+            isDeepStrictEqual(terminalOutcome(latestPayload), terminalOutcome(requested))) return latestPayload;
+        throw terminalConflict(latestPayload.status, requested.status);
+      }
+      if (latestPayload.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return latestPayload;
+      return latestPayload;
     });
   }
 

@@ -1,5 +1,50 @@
 const crypto = require('crypto');
+
+const TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled'];
+
+function terminalOutcome(execution) {
+  const terminalEvents = (Array.isArray(execution.events) ? execution.events : [])
+    .filter(event => ['execution.completed', 'execution.failed', 'execution.cancelled'].includes(event?.type))
+    .map(event => ({ type: event.type, data: event.data || {} }));
+  const failedSteps = execution.status === 'failed'
+    ? (Array.isArray(execution.steps) ? execution.steps : [])
+        .filter(step => step?.status === 'failed')
+        .map(step => ({
+          step: step.step,
+          planRevision: step.planRevision || 1,
+          tool: step.tool || null,
+          error: step.error || null
+        }))
+    : [];
+
+  const outcome = {
+    status: execution.status,
+    result: execution.result ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null,
+    terminalEvents,
+    failureDetails: execution.status === 'failed'
+      ? {
+          errors: execution.agentState?.errors || [],
+          failedSteps
+        }
+      : null
+  };
+
+  // Compare the persisted JSON representation, not transient undefined values
+  // or runtime-only object details that disappear at the storage boundary.
+  return JSON.parse(JSON.stringify(outcome));
+}
+
+function terminalConflict(currentStatus, requestedStatus) {
+  const error = new Error(`Execution is already terminal (${currentStatus}) and rejects conflicting outcome ${requestedStatus}`);
+  error.code = 'EXECUTION_TERMINAL_CONFLICT';
+  error.status = 409;
+  return error;
+}
 const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
 const SqliteDatabase = require('./sqlite-database');
 const { SqliteWorkflowRepository, SqliteWorkflowLeaseRepository } = require('./workflow.repository');
 const { SqliteMemoryRepository, SqliteMemoryAuditRepository } = require('./memory.repository');
@@ -15,6 +60,9 @@ class SqliteExecutionRepository {
       id: execution.id || execution.executionId || crypto.randomUUID(),
       executionId: execution.executionId || execution.id || crypto.randomUUID(),
       executionVersion: Number(execution.executionVersion || 1),
+      tenantId: execution.tenantId ?? execution.metadata?.tenantId ?? null,
+      userId: execution.userId ?? execution.metadata?.userId ?? null,
+      workspaceId: execution.workspaceId ?? execution.metadata?.workspaceId ?? null,
       status: execution.status || 'created',
       agentLifecycle: execution.agentLifecycle || 'created',
       metadata: execution.metadata && typeof execution.metadata === 'object' ? { ...execution.metadata } : {},
@@ -68,9 +116,44 @@ class SqliteExecutionRepository {
   update(executionId, patch, { tenantId = null } = {}) {
     const current = this.findById(executionId, { tenantId });
     if (!current) return null;
-    const updated = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId, updatedAt: new Date().toISOString() });
-    this.db.run('UPDATE executions SET payload = ?, updated_at = ? WHERE execution_id = ?', [JSON.stringify(updated), updated.updatedAt, executionId]);
-    return updated;
+    assertExecutionIdentityUnchanged(current, patch);
+
+    if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
+      const requested = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId });
+      if (requested.status === current.status &&
+          isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+      throw terminalConflict(current.status, requested.status);
+    }
+    if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
+
+    const updated = this.normalize({ ...current, ...patch, ...preserveExecutionIdentity(current, patch), updatedAt: new Date().toISOString() });
+    const tenantClause = tenantId
+      ? (tenantId === 'local'
+          ? " AND (json_extract(payload, '$.metadata.tenantId') = ? OR json_extract(payload, '$.metadata.tenantId') IS NULL)"
+          : " AND json_extract(payload, '$.metadata.tenantId') = ?")
+      : '';
+    const params = [JSON.stringify(updated), updated.updatedAt, executionId];
+    if (tenantId) params.push(tenantId);
+    params.push(...TERMINAL_EXECUTION_STATUSES, patch.status || '');
+    const result = this.db.run(
+      'UPDATE executions SET payload = ?, updated_at = ? WHERE execution_id = ?' + tenantClause +
+      " AND COALESCE(json_extract(payload, '$.status'), 'created') NOT IN (?, ?, ?)" +
+      " AND NOT (COALESCE(json_extract(payload, '$.cancellationRequested'), 0) = 1 AND ? IN ('completed', 'failed'))",
+      params
+    );
+    if (result.changes === 1) return updated;
+
+    // A competing writer may have committed a terminal state after our read.
+    const latest = this.findById(executionId, { tenantId });
+    if (!latest) return null;
+    if (TERMINAL_EXECUTION_STATUSES.includes(latest.status)) {
+      const requested = this.normalize({ ...latest, ...patch, id: latest.id, executionId: latest.executionId });
+      if (requested.status === latest.status &&
+          isDeepStrictEqual(terminalOutcome(latest), terminalOutcome(requested))) return latest;
+      throw terminalConflict(latest.status, requested.status);
+    }
+    if (latest.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return latest;
+    return null;
   }
 
   deleteById(executionId, { tenantId = null } = {}) {
@@ -267,17 +350,42 @@ class SqliteIdempotencyRepository {
     }
     return { created: true, key, record: actual };
   }
-  complete(key, result, { tenantId = null } = {}) {
-    const record = this.findByKey(key, { tenantId }); if (!record) return null;
-    record.status = 'completed'; record.result = result ?? null; record.completedAt = new Date().toISOString();
-    this.db.run("UPDATE idempotency SET payload = ?, status = 'completed', updated_at = ? WHERE key = ?", [JSON.stringify(record), record.completedAt, key]);
-    return record;
+  transitionTerminal(key, status, value, { tenantId = null } = {}) {
+    const record = this.findByKey(key, { tenantId });
+    if (!record) return null;
+    if (record.status !== 'running') return record;
+
+    const completedAt = new Date().toISOString();
+    const next = {
+      ...record,
+      status,
+      ...(status === 'completed' ? { result: value ?? null } : {
+        error: { code: value?.code || 'EXECUTION_FAILED', message: value?.message || String(value || '') }
+      }),
+      completedAt
+    };
+    let tenantClause = '';
+    const params = [JSON.stringify(next), status, completedAt, key];
+    if (tenantId) {
+      tenantClause = tenantId === 'local'
+        ? " AND (json_extract(payload, '$.tenantId') = ? OR json_extract(payload, '$.tenantId') IS NULL)"
+        : " AND json_extract(payload, '$.tenantId') = ?";
+      params.push(tenantId);
+    }
+    // A single conditional UPDATE is the terminal compare-and-set. SQLite serializes
+    // writers, and the status predicate prevents a late competing terminal writer
+    // from replacing the first committed result.
+    this.db.run(
+      "UPDATE idempotency SET payload = ?, status = ?, updated_at = ? WHERE key = ? AND status = 'running'" + tenantClause,
+      params
+    );
+    return this.findByKey(key, { tenantId });
   }
-  fail(key, error, { tenantId = null } = {}) {
-    const record = this.findByKey(key, { tenantId }); if (!record) return null;
-    record.status = 'failed'; record.error = { code: error?.code || 'EXECUTION_FAILED', message: error?.message || String(error || '') }; record.completedAt = new Date().toISOString();
-    this.db.run("UPDATE idempotency SET payload = ?, status = 'failed', updated_at = ? WHERE key = ?", [JSON.stringify(record), record.completedAt, key]);
-    return record;
+  complete(key, result, options = {}) {
+    return this.transitionTerminal(key, 'completed', result, options);
+  }
+  fail(key, error, options = {}) {
+    return this.transitionTerminal(key, 'failed', error, options);
   }
   delete(key, { tenantId = null } = {}) { const found=this.findByKey(key, { tenantId }); if(!found)return false; this.db.run('DELETE FROM idempotency WHERE key = ?', [key]); return true; }
   clear() { this.db.run('DELETE FROM idempotency;'); }

@@ -12,6 +12,12 @@ const config = Object.freeze({
   host: assertLocalHttpHost(process.env.HOST || '127.0.0.1'),
   nodeEnv: process.env.NODE_ENV || 'development',
   persistenceMode: process.env.ORIENT_PERSISTENCE || 'json',
+  persistenceProfile: process.env.ORIENT_PERSISTENCE_PROFILE || (process.env.ORIENT_PERSISTENCE === 'postgres' ? 'postgres' : 'local'),
+  enabledPersistenceCapabilities: process.env.ORIENT_PERSISTENCE_CAPABILITIES === undefined
+    ? (process.env.ORIENT_PERSISTENCE === undefined || process.env.ORIENT_PERSISTENCE === 'json'
+        ? ['workflow.ephemeral']
+        : [])
+    : process.env.ORIENT_PERSISTENCE_CAPABILITIES.split(',').map(value => value.trim()).filter(Boolean),
   databaseUrl: process.env.ORIENT_DATABASE_URL || process.env.DATABASE_URL || '',
   databasePoolMax: positiveInteger(process.env.ORIENT_DATABASE_POOL_MAX, 10),
   databaseIdleTimeoutMs: positiveInteger(process.env.ORIENT_DATABASE_IDLE_TIMEOUT_MS, 30000),

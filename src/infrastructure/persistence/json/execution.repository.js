@@ -1,6 +1,52 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
+
+const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function terminalOutcome(execution) {
+  const terminalEvents = (Array.isArray(execution.events) ? execution.events : [])
+    .filter(event => ['execution.completed', 'execution.failed', 'execution.cancelled'].includes(event?.type))
+    .map(event => ({ type: event.type, data: event.data || {} }));
+  const failedSteps = execution.status === 'failed'
+    ? (Array.isArray(execution.steps) ? execution.steps : [])
+        .filter(step => step?.status === 'failed')
+        .map(step => ({
+          step: step.step,
+          planRevision: step.planRevision || 1,
+          tool: step.tool || null,
+          error: step.error || null
+        }))
+    : [];
+
+  const outcome = {
+    status: execution.status,
+    result: execution.result ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null,
+    terminalEvents,
+    failureDetails: execution.status === 'failed'
+      ? {
+          errors: execution.agentState?.errors || [],
+          failedSteps
+        }
+      : null
+  };
+
+  // Compare the persisted JSON representation, not transient undefined values
+  // or runtime-only object details that disappear at the storage boundary.
+  return JSON.parse(JSON.stringify(outcome));
+}
+
+function terminalConflict(currentStatus, requestedStatus) {
+  const error = new Error(`Execution is already terminal (${currentStatus}) and rejects conflicting outcome ${requestedStatus}`);
+  error.code = 'EXECUTION_TERMINAL_CONFLICT';
+  error.status = 409;
+  return error;
+}
 
 class ExecutionRepository {
   constructor(filePath, { lockTimeoutMs = 30_000 } = {}) {
@@ -62,6 +108,9 @@ class ExecutionRepository {
         crypto.randomUUID(),
       requestId: execution.requestId || null,
       goalId: execution.goalId || null,
+      tenantId: execution.tenantId ?? execution.metadata?.tenantId ?? null,
+      userId: execution.userId ?? execution.metadata?.userId ?? null,
+      workspaceId: execution.workspaceId ?? execution.metadata?.workspaceId ?? null,
       parentExecutionId: execution.parentExecutionId || null,
       executionVersion: Number(execution.executionVersion || 1),
       status: execution.status || 'created',
@@ -302,12 +351,21 @@ class ExecutionRepository {
       }
 
       const current = this.normalize(executions[index]);
+      assertExecutionIdentityUnchanged(current, patch);
 
       if (tenantId && current.metadata?.tenantId !== tenantId && !(tenantId === 'local' && !current.metadata?.tenantId)) return null;
       if (tenantId && patch.metadata?.tenantId && patch.metadata.tenantId !== tenantId) throw new Error('Execution tenant mismatch');
 
+      // The lock makes this read/decision/write one atomic terminal transition.
+      // Once terminal, execution state is immutable; retries return the winner.
+      if (TERMINAL_EXECUTION_STATUSES.has(current.status)) {
+        const requested = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId });
+        if (requested.status === current.status &&
+            isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+        throw terminalConflict(current.status, requested.status);
+      }
+
       // A durable cancellation request wins over a later terminal completion write.
-      // This is the atomic outcome boundary for JSON persistence.
       if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) {
         return current;
       }
@@ -315,6 +373,7 @@ class ExecutionRepository {
       const updated = this.normalize({
         ...current,
         ...patch,
+        ...preserveExecutionIdentity(current, patch),
         ...(current.cancellationRequested ? {
           cancellationRequested: true,
           cancellationReason: current.cancellationReason || patch.cancellationReason || null

@@ -221,7 +221,7 @@ class ProjectModifier {
     }
 
     if (rollbackErrors.length > 0) {
-      const error = new Error('Rollback could not safely restore every affected file');
+      const error = new Error('Rollback failed');
       error.code = 'PROJECT_MODIFICATION_ROLLBACK_FAILED';
       error.rollbackErrors = rollbackErrors;
       throw error;

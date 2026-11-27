@@ -105,10 +105,11 @@ class SqliteExecutionRepository {
       : '';
     const params = [JSON.stringify(updated), updated.updatedAt, executionId];
     if (tenantId) params.push(tenantId);
-    params.push(...TERMINAL_EXECUTION_STATUSES);
+    params.push(...TERMINAL_EXECUTION_STATUSES, patch.status || '');
     const result = this.db.run(
       'UPDATE executions SET payload = ?, updated_at = ? WHERE execution_id = ?' + tenantClause +
-      " AND COALESCE(json_extract(payload, '$.status'), 'created') NOT IN (?, ?, ?)",
+      " AND COALESCE(json_extract(payload, '$.status'), 'created') NOT IN (?, ?, ?)" +
+      " AND NOT (COALESCE(json_extract(payload, '$.cancellationRequested'), 0) = 1 AND ? IN ('completed', 'failed'))",
       params
     );
     if (result.changes === 1) return updated;

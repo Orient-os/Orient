@@ -22,7 +22,7 @@ function fingerprint(file, mutant) {
 }
 
 if (!fs.existsSync(reportPath)) {
-  fail(\`Mutation report is missing: \${reportPath}\`);
+  fail('Mutation report is missing: ' + reportPath);
   process.exit();
 }
 
@@ -44,7 +44,7 @@ for (const item of allowlist) {
     process.exit();
   }
   if (approved.has(item.fingerprint)) {
-    fail(\`Duplicate allowlist fingerprint: \${item.fingerprint}\`);
+    fail('Duplicate allowlist fingerprint: ' + item.fingerprint);
     process.exit();
   }
   approved.set(item.fingerprint, item);
@@ -81,5 +81,5 @@ for (const [file, entry] of Object.entries(report.files || {})) {
 const stale = [...approved.keys()].filter(key => !consumed.has(key));
 process.stdout.write(JSON.stringify({ totals, unresolved, staleAllowlistEntries: stale }, null, 2) + '\n');
 
-if (unresolved.length) fail(\`Found \${unresolved.length} untriaged non-killed mutations; add behavioral tests or a reviewed equivalence rationale.\`);
-if (stale.length) fail(\`Found \${stale.length} stale equivalence allowlist entries; remove or revalidate them.\`);
+if (unresolved.length) fail('Found ' + unresolved.length + ' untriaged non-killed mutations; add behavioral tests or a reviewed equivalence rationale.');
+if (stale.length) fail('Found ' + stale.length + ' stale equivalence allowlist entries; remove or revalidate them.');

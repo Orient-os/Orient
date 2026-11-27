@@ -36,24 +36,27 @@ class BuildExecutionService {
     let modification;
     let snapshots = [];
     const supportsRollback =
-      typeof this.modifier.snapshot === 'function' &&
       typeof this.modifier.rollback === 'function';
+    const usesTransactionRollback =
+      typeof this.modifier.rollbackTransaction === 'function';
 
     try {
-      if (supportsRollback) {
+      // ProjectModifier owns the before-images and binds them to the exact
+      // applied after-images. Do not take a second, potentially inconsistent
+      // snapshot in the execution service.
+      if (supportsRollback && !usesTransactionRollback &&
+          typeof this.modifier.snapshot === 'function') {
         for (const change of changeSet.changes) {
           snapshots.push(await this.modifier.snapshot(change));
         }
       }
 
-      modification =
-        await this.modifier.apply(changeSet);
+      modification = await this.modifier.apply(changeSet);
 
-      const verification =
-        await this.verifier.verify({
-          definitionOfDone,
-          checks
-        });
+      const verification = await this.verifier.verify({
+        definitionOfDone,
+        checks
+      });
 
       const verificationPassed =
         verification?.status === 'passed' &&
@@ -70,32 +73,38 @@ class BuildExecutionService {
           });
         }
 
-        let rollback = { rolledBack: false };
         try {
-          rollback = await this.modifier.rollback(snapshots);
-        } catch (rollbackError) {
+          const rollback = usesTransactionRollback
+            ? await this.modifier.rollback(modification)
+            : await this.modifier.rollback(snapshots);
+
           return new BuildExecutionResult({
             status: 'failed',
             plan,
             changeSet,
             modification,
             verification,
-            error: {
-              name: rollbackError.name,
-              message: rollbackError.message
-            },
             rollback
           });
+        } catch (rollbackError) {
+          return new BuildExecutionResult({
+            status: 'rollback-failed',
+            plan,
+            changeSet,
+            modification,
+            verification,
+            error: {
+              name: rollbackError.name,
+              code: rollbackError.code,
+              message: rollbackError.message
+            },
+            rollback: {
+              rolledBack: false,
+              rollbackErrors: rollbackError.rollbackErrors ||
+                rollbackError.rollbackError?.rollbackErrors || []
+            }
+          });
         }
-
-        return new BuildExecutionResult({
-          status: 'failed',
-          plan,
-          changeSet,
-          modification,
-          verification,
-          rollback
-        });
       }
 
       return new BuildExecutionResult({
@@ -106,14 +115,23 @@ class BuildExecutionService {
         verification
       });
     } catch (error) {
+      const rollbackFailed =
+        error.code === 'PROJECT_MODIFICATION_ROLLBACK_FAILED';
       return new BuildExecutionResult({
-        status: 'failed',
+        status: rollbackFailed ? 'rollback-failed' : 'failed',
         plan,
         changeSet,
         error: {
           name: error.name,
+          code: error.code,
           message: error.message
-        }
+        },
+        ...(rollbackFailed ? {
+          rollback: {
+            rolledBack: false,
+            rollbackErrors: error.rollbackError?.rollbackErrors || []
+          }
+        } : {})
       });
     }
   }

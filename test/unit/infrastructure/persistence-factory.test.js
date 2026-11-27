@@ -56,7 +56,7 @@ test('JSON persistence passes the trusted preflight and initialized adapter cont
   }
 });
 
-test('SQLite capability preflight fails before opening a database or applying migrations', () => {
+test('SQLite rejects an unsupported optional capability before opening a database or applying migrations', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-preflight-'));
   const filePath = path.join(directory, 'must-not-exist.db');
   try {
@@ -65,10 +65,11 @@ test('SQLite capability preflight fails before opening a database or applying mi
         persistenceMode: 'sqlite',
         persistenceProfile: 'local',
         databaseFile: filePath,
-        agentDataDirectory: directory
+        agentDataDirectory: directory,
+        enabledPersistenceCapabilities: ['execution.resumeLease']
       }),
-      error => error.code === 'PERSISTENCE_GUARANTEE_UNSATISFIED' &&
-        error.guarantee === 'idempotency.terminal.protection' &&
+      error => error.code === 'PERSISTENCE_CAPABILITY_MISSING' &&
+        error.capability === 'execution.resumeLease' &&
         error.phase === 'preflight'
     );
     assert.equal(fs.existsSync(filePath), false);

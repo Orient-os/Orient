@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -115,4 +116,35 @@ test('persistence constructor failures return a structured initialization diagno
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('SQLite default configuration does not request unsupported ephemeral workflows', () => {
+  const env = { ...process.env, ORIENT_PERSISTENCE: 'sqlite' };
+  delete env.ORIENT_PERSISTENCE_CAPABILITIES;
+  delete env.ORIENT_PERSISTENCE_PROFILE;
+  const script = `
+    const config = require('./src/core/config');
+    const { preflightPersistence } = require('./src/infrastructure/persistence/contracts/persistence-adapter-contract');
+    const resolved = preflightPersistence({
+      mode: config.persistenceMode,
+      profile: config.persistenceProfile,
+      enabledCapabilities: config.enabledPersistenceCapabilities
+    });
+    process.stdout.write(JSON.stringify({
+      enabled: config.enabledPersistenceCapabilities,
+      durable: resolved.capabilities['workflow.durable'].enabled,
+      ephemeral: resolved.capabilities['workflow.ephemeral'].enabled
+    }));
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: process.cwd(),
+    env,
+    encoding: 'utf8'
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    enabled: [],
+    durable: true,
+    ephemeral: false
+  });
 });

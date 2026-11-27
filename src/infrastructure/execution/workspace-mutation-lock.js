@@ -18,7 +18,10 @@ function syncDirectory(directory) {
     descriptor = fs.openSync(directory, 'r');
     fs.fsyncSync(descriptor);
   } catch (error) {
-    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+    const unsupported = new Error('Filesystem does not provide durable directory synchronization for workspace locks');
+    unsupported.code = 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_FILESYSTEM';
+    unsupported.cause = error;
+    throw unsupported;
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
@@ -37,7 +40,15 @@ function readProcessStartIdentity(pid) {
 }
 
 function readBootId() {
-  const value = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  let value;
+  try {
+    value = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  } catch (error) {
+    const unsupported = new Error('Host boot identity is unavailable');
+    unsupported.code = 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM';
+    unsupported.cause = error;
+    throw unsupported;
+  }
   if (!/^[a-f0-9-]{16,64}$/i.test(value)) {
     fail('Host boot identity is unavailable', 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM');
   }
@@ -74,6 +85,12 @@ function readOwner(lockPath) {
   const ownerPath = path.join(lockPath, 'owner.json');
   let descriptor;
   try {
+    const directoryStats = fs.lstatSync(lockPath);
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() ||
+        (typeof process.getuid === 'function' &&
+          (directoryStats.uid !== process.getuid() || (directoryStats.mode & 0o7777) !== 0o700))) {
+      fail('Workspace lock directory is not private and owned by the application user', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+    }
     if (typeof fs.constants.O_NOFOLLOW !== 'number') {
       fail('Safe workspace lock inspection is unsupported on this platform', 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM');
     }
@@ -211,13 +228,17 @@ class WorkspaceMutationLock {
       if (error.code === 'ENOENT') return null;
       throw error;
     }
-    return readOwner(this.lockPath);
+    const owner = readOwner(this.lockPath);
+    if (owner.workspaceId !== this.workspaceId) {
+      fail('Workspace lock belongs to a different workspace identity', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+    }
+    return owner;
   }
 
   recover({ expectedToken, operatorId, reason } = {}) {
     if (typeof expectedToken !== 'string' || !expectedToken ||
-        typeof operatorId !== 'string' || !operatorId.trim() ||
-        typeof reason !== 'string' || !reason.trim()) {
+        typeof operatorId !== 'string' || !operatorId.trim() || operatorId.length > 128 ||
+        typeof reason !== 'string' || !reason.trim() || reason.length > 1024) {
       fail('Explicit lock recovery requires expectedToken, operatorId, and reason', 'PROJECT_WORKSPACE_LOCK_RECOVERY_INPUT_INVALID');
     }
     const owner = readOwner(this.lockPath);

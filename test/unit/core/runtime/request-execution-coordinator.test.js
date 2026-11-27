@@ -1151,6 +1151,68 @@ test('uses the reserved execution identity as the durable ExecutionContext ident
 });
 
 
+test('does not issue an approval challenge when any mandatory approval identity field is missing', async () => {
+  const invalidContexts = [
+    { name: 'step', step: undefined, tool: 'test.tool', capability: 'workspace.write' },
+    { name: 'tool', step: 1, tool: undefined, capability: 'workspace.write' },
+    { name: 'capability', step: 1, tool: 'test.tool', capability: undefined }
+  ];
+
+  for (const invalid of invalidContexts) {
+    let issueCalls = 0;
+    let checkpointCalls = 0;
+    let eventPersistenceCalls = 0;
+    const approvalContext = {
+      executionId: 'execution-missing-approval-' + invalid.name,
+      step: invalid.step,
+      planRevision: 1,
+      planSha256: 'a'.repeat(64),
+      tool: invalid.tool,
+      capability: invalid.capability,
+      tenantId: 'tenant-a',
+      input: {}
+    };
+    const coordinator = new RequestExecutionCoordinator({
+      agentOrchestrator: {
+        plan: async () => ({
+          plan: { intent: 'test.missing-approval-identity', steps: [{ step: 1, tool: 'test.tool' }] },
+          validation: { valid: true, steps: [{ step: 1, tool: 'test.tool' }] }
+        })
+      },
+      agentExecutionCoordinator: {
+        run: async () => {
+          throw Object.assign(new Error('approval required'), {
+            code: 'APPROVAL_REQUIRED',
+            executionContext: approvalContext
+          });
+        }
+      },
+      recoveryCoordinator: { fail: async () => { throw new Error('approval must not enter failure recovery'); } },
+      persistence: null,
+      persistenceCoordinator: {
+        persistExecution: async () => ({}),
+        checkpoint: async () => { checkpointCalls += 1; },
+        persistEvents: async () => { eventPersistenceCalls += 1; }
+      },
+      quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+      quotaPolicy: { toJSON: () => ({}) },
+      approvalService: {
+        issue: async () => { issueCalls += 1; return { approvalId: 'must-not-be-issued' }; }
+      },
+      tenantId: 'tenant-a',
+      maxInputChars: 1000
+    });
+
+    await assert.rejects(
+      coordinator.execute('perform guarded action'),
+      error => error.code === 'APPROVAL_REQUIRED'
+    );
+    assert.equal(issueCalls, 0, invalid.name + ': incomplete approval identity must not issue a challenge');
+    assert.equal(checkpointCalls, 1, invalid.name + ': requested approval state must be checkpointed');
+    assert.equal(eventPersistenceCalls, 1, invalid.name + ': requested approval event must be persisted');
+  }
+});
+
 test('approval challenge summarizes the complete proposed change while bounding displayed content', async () => {
   let issuedApproval = null;
   const content = 'x'.repeat(32001);

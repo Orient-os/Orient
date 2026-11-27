@@ -8,6 +8,7 @@ const {
 const PROFILE_REQUIREMENTS = require('./persistence-profile-requirements');
 const { getPersistenceManifest } = require('../../../infrastructure/persistence/manifests/persistence-manifest-registry');
 const PersistenceCapabilityError = require('./persistence-capability-errors');
+const { getPersistenceGuaranteeEvidence } = require('./persistence-guarantee-evidence');
 
 function fail(code, message, details = {}) {
   throw new PersistenceCapabilityError({ code, message, ...details });
@@ -108,6 +109,15 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
     }
   }
 
+  const guaranteeEvidence = getPersistenceGuaranteeEvidence(adapter, requirements.requiredGuarantees);
+  if (!guaranteeEvidence) {
+    fail('PERSISTENCE_GUARANTEE_EVIDENCE_MISSING', 'A required persistence guarantee has no adapter-specific behavioral evidence mapping', {
+      adapter, profile, phase: 'preflight',
+      expected: requirements.requiredGuarantees,
+      actual: Object.keys(guaranteeEvidence || {})
+    });
+  }
+
   const resolved = {};
   for (const [name, policy] of Object.entries(requirements.optionalCapabilities)) {
     const declaration = manifest.capabilities[name] || {
@@ -143,6 +153,7 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
     profile,
     contractVersion: manifest.contractVersion,
     guarantees: manifest.guarantees,
+    guaranteeEvidence,
     capabilities: Object.freeze(resolved)
   });
 }
@@ -186,10 +197,10 @@ function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'pos
     interfacesVerified: true,
     guaranteesVerified: false,
     guaranteeVerification: Object.freeze(Object.fromEntries(
-      (resolved?.guarantees || []).map(guarantee => [guarantee, Object.freeze({
+      Object.entries(resolved?.guaranteeEvidence || {}).map(([guarantee, evidence]) => [guarantee, Object.freeze({
         status: 'unverified',
-        evidence: Object.freeze([]),
-        reason: 'behavioral-conformance-evidence-not-attached'
+        evidence,
+        reason: 'behavioral-evidence-is-linked-to-strict-ci-but-not-executed-at-runtime'
       })])
     ))
   });

@@ -148,6 +148,10 @@ class OrientRuntime {
       (persistence && typeof persistence.health === 'function' &&
         persistenceCapabilities?.interfacesVerified !== true);
     this.ready = deferRuntimeInfrastructureStartup !== true;
+    this.lifecycleState = this.ready ? 'READY' : 'CREATED';
+    this.startPromise = null;
+    this.startFailure = null;
+    this.shutdownPromise = null;
     this.persistenceCapabilities = persistenceCapabilities;
 
     this.tenantId = tenantId || 'local';
@@ -278,23 +282,75 @@ class OrientRuntime {
       version;
   }
 
-  async start() {
-    assertConcretePersistenceContract(this.persistence, this.persistenceCapabilities, 'runtime-start');
-    if (this.persistence && typeof this.persistence.health === 'function' &&
-        this.persistenceCapabilities?.interfacesVerified !== true) {
-      throw new PersistenceCapabilityError({
-        code: 'PERSISTENCE_CAPABILITY_CONTRACT_UNVERIFIED',
-        message: 'Persistence adapter interfaces must be verified before runtime startup',
-        adapter: this.persistence.health()?.adapter || null,
-        profile: this.persistenceCapabilities?.profile || null,
-        phase: 'runtime-start',
-        expected: 'interfacesVerified=true',
-        actual: this.persistenceCapabilities?.interfacesVerified ?? false
-      });
+  start() {
+    if (this.lifecycleState === 'READY') {
+      return this.infrastructureCoordinator.start();
     }
-    const result = await this.infrastructureCoordinator.start();
-    this.ready = true;
-    return result;
+    if (this.lifecycleState === 'STOPPING' || this.lifecycleState === 'STOPPED') {
+      return Promise.reject(Object.assign(new Error('Runtime has stopped and cannot be restarted'), {
+        code: 'RUNTIME_STOPPED',
+        state: this.lifecycleState
+      }));
+    }
+    if (this.lifecycleState === 'FAILED_TERMINAL') {
+      return Promise.reject(this.startFailure || Object.assign(new Error('Runtime startup failed terminally'), {
+        code: 'RUNTIME_STARTUP_FAILED_TERMINAL'
+      }));
+    }
+    if (this.lifecycleState === 'STARTING') return this.startPromise;
+
+    this.lifecycleState = 'STARTING';
+    this.ready = false;
+
+    let phase = 'validation';
+    const operation = (async () => {
+      try {
+        assertConcretePersistenceContract(this.persistence, this.persistenceCapabilities, 'runtime-start');
+        if (this.persistence && typeof this.persistence.health === 'function' &&
+            this.persistenceCapabilities?.interfacesVerified !== true) {
+          throw new PersistenceCapabilityError({
+            code: 'PERSISTENCE_CAPABILITY_CONTRACT_UNVERIFIED',
+            message: 'Persistence adapter interfaces must be verified before runtime startup',
+            adapter: this.persistence.health()?.adapter || null,
+            profile: this.persistenceCapabilities?.profile || null,
+            phase: 'runtime-start',
+            expected: 'interfacesVerified=true',
+            actual: this.persistenceCapabilities?.interfacesVerified ?? false
+          });
+        }
+
+        phase = 'infrastructure';
+        const result = await this.infrastructureCoordinator.start();
+        if (this.lifecycleState === 'STOPPING') {
+          throw Object.assign(new Error('Runtime startup completed after shutdown began'), {
+            code: 'RUNTIME_STOPPING',
+            state: this.lifecycleState
+          });
+        }
+        this.ready = true;
+        this.lifecycleState = 'READY';
+        return result;
+      } catch (error) {
+        this.ready = false;
+        if (this.lifecycleState !== 'STOPPING') {
+          const terminal = phase === 'validation' ||
+            this.infrastructureCoordinator.startFailure != null ||
+            error?.code === 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE' ||
+            error?.retryable === false;
+          this.lifecycleState = terminal ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE';
+          if (terminal) this.startFailure = error;
+        }
+        throw error;
+      }
+    })();
+
+    this.startPromise = operation;
+    operation.catch(() => {
+      if (this.startPromise === operation && this.lifecycleState === 'FAILED_RETRYABLE') {
+        this.startPromise = null;
+      }
+    });
+    return operation;
   }
 
   persistEvents(context, persistencePrincipal = null) {
@@ -318,7 +374,45 @@ class OrientRuntime {
   }
 
   shutdown(options = {}) {
-    return this.infrastructureCoordinator.shutdown(options);
+    if (this.shutdownPromise) return this.shutdownPromise;
+    if (this.lifecycleState === 'STOPPED') return Promise.resolve();
+
+    this.ready = false;
+    this.lifecycleState = 'STOPPING';
+    const startup = this.startPromise;
+
+    const operation = (async () => {
+      if (startup) {
+        try {
+          await startup;
+        } catch {
+          // Startup diagnostics remain available through startFailure. Shutdown
+          // must still attempt to close infrastructure after a failed start.
+        }
+      }
+      try {
+        const result = await this.infrastructureCoordinator.shutdown(options);
+        this.lifecycleState = 'STOPPED';
+        return result;
+      } catch (error) {
+        this.lifecycleState = 'FAILED_TERMINAL';
+        this.startFailure = this.startFailure || error;
+        throw error;
+      }
+    })();
+
+    this.shutdownPromise = operation;
+    return operation;
+  }
+
+  assertReady(operation) {
+    if (this.lifecycleState === 'READY' && this.ready === true) return true;
+    const stopped = this.lifecycleState === 'STOPPING' || this.lifecycleState === 'STOPPED';
+    throw Object.assign(new Error(`Runtime is not ready for ${operation || 'this operation'}`), {
+      code: stopped ? 'RUNTIME_STOPPED' : 'RUNTIME_NOT_READY',
+      state: this.lifecycleState,
+      operation: operation || null
+    });
   }
 
   requirePersistenceCapability(name) {
@@ -337,6 +431,7 @@ class OrientRuntime {
   }
 
   async executeWorkflow(input, options = {}) {
+    this.assertReady('executeWorkflow');
     if (this.persistenceCapabilities) {
       const durableEnabled = this.persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true;
       const ephemeralEnabled = this.persistenceCapabilities.capabilities?.['workflow.ephemeral']?.enabled === true;
@@ -352,6 +447,7 @@ class OrientRuntime {
   }
 
   async execute(input, options = {}) {
+    this.assertReady('execute');
     return this.requestExecutionCoordinator.execute(input, options);
   }
 
@@ -364,6 +460,7 @@ class OrientRuntime {
   }
 
   async resume(executionId, options = {}, ownerSessionContext = null, persistencePrincipal = null) {
+    this.assertReady('resume');
     this.requirePersistenceCapability('execution.resumeLease');
     try {
       const result = await this.requestExecutionCoordinator.resume(executionId, {
@@ -420,6 +517,7 @@ class OrientRuntime {
 
 
   async cancelExecution(executionId, { reason = 'Execution cancellation requested', persistencePrincipal = null } = {}) {
+    this.assertReady('cancelExecution');
     this.requirePersistenceCapability('execution.cancellation');
     if (!this.persistence?.executions?.requestCancellation) {
       throw Object.assign(new Error('Durable execution cancellation storage is required'), {
@@ -534,6 +632,7 @@ class OrientRuntime {
   }
 
   async decideApproval(options = {}) {
+    this.assertReady('decideApproval');
     this.requirePersistenceCapability('approval.durable');
     if (!this.approvalService?.decide) {
       throw Object.assign(new Error('Durable approval service is required'), { code: 'APPROVAL_SERVICE_REQUIRED' });

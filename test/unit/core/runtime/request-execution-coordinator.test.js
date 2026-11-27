@@ -1220,7 +1220,7 @@ test('approval challenge summarizes the complete proposed change while bounding 
     {
       action: 'update',
       path: 'p'.repeat(513),
-      expectedContentSha256: 'b'.repeat(64),
+      expectedContentSha256: 'b'.repeat(70),
       content
     },
     null,
@@ -1228,7 +1228,7 @@ test('approval challenge summarizes the complete proposed change while bounding 
     ...Array.from({ length: 8 }, (_, index) => ({
       action: 'create',
       path: 'created-' + index,
-      content: 'line one\\nline two'
+      content: index === 0 ? 'line one\nline two\r\nline three' : index === 1 ? 'x'.repeat(32000) : 'line one\\nline two'
     })),
     { action: 'create', path: 'outside-summary-limit', content: 'not included' }
   ];
@@ -1289,6 +1289,9 @@ test('approval challenge summarizes the complete proposed change while bounding 
   assert.equal(summary.changes[0].action, 'update');
   assert.equal(summary.changes[0].path.length, 512);
   assert.equal(summary.changes[0].expectedContentSha256, 'b'.repeat(64));
+  assert.equal(summary.changes[3].lineCount, 3);
+  assert.equal(summary.changes[4].contentTruncated, false);
+  assert.equal(summary.changes[4].proposedContent.length, 32000);
   assert.equal(summary.changes[0].proposedContentSha256,
     require('node:crypto').createHash('sha256').update(content, 'utf8').digest('hex'));
   assert.equal(summary.changes[0].contentBytes, Buffer.byteLength(content, 'utf8'));

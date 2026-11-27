@@ -518,3 +518,71 @@ test('owner lockout key collision is preserved and not removed by a losing initi
   assert.equal(reserved, true);
   assert.equal(fs.readFileSync(keyFile, 'utf8'), 'owned by another writer');
 });
+
+
+test('rejects malformed persisted owner login-failure records at every schema boundary', t => {
+  const invalidRecords = [
+    { keyVersion: 0 },
+    { keyVersion: 3 },
+    { keyVersion: null },
+    { blockedUntil: -1 },
+    { blockedUntil: 86400001 + 10000 },
+    { windowStartedAt: 10001 },
+    { count: 0 },
+    { count: 101 }
+  ];
+
+  for (const [index, override] of invalidRecords.entries()) {
+    const { stateFile } = fixture(t);
+    new OwnerIdentityService({
+      stateFile,
+      bootstrapPassword: 'temporary-owner-password-9F!x',
+      now: () => 10000
+    });
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.loginFailures = [{
+      key: (index + 1).toString(16).padStart(64, '0'),
+      count: 1,
+      windowStartedAt: 10000,
+      blockedUntil: 0,
+      keyVersion: 2,
+      ...override
+    }];
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    assert.throws(
+      () => new OwnerIdentityService({ stateFile, now: () => 10000 }),
+      error => error.code === 'OWNER_IDENTITY_STATE_INVALID',
+      'invalid persisted login-failure field must fail closed: ' + JSON.stringify(override)
+    );
+  }
+});
+
+test('expires a login lockout at the exact persisted window boundary before recording a new failure', async t => {
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({
+    stateFile,
+    bootstrapPassword: 'temporary-owner-password-9F!x',
+    maxLoginFailures: 1,
+    loginLockoutMs: 1000,
+    now: () => 1000
+  });
+
+  const first = await identity.login({
+    username: 'Admin',
+    password: 'wrong-password-value',
+    sourceIp: '192.0.2.44',
+    now: 1000
+  });
+  assert.equal(first.code, 'OWNER_LOGIN_FAILED');
+  assert.equal(identity.loginFailures.values().next().value.blockedUntil, 2000);
+
+  const atBoundary = await identity.login({
+    username: 'Admin',
+    password: 'wrong-password-value',
+    sourceIp: '192.0.2.44',
+    now: 2000
+  });
+  assert.equal(atBoundary.code, 'OWNER_LOGIN_FAILED');
+  assert.equal(identity.loginFailures.values().next().value.count, 1);
+  assert.equal(identity.loginFailures.values().next().value.windowStartedAt, 2000);
+});

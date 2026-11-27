@@ -54,6 +54,9 @@ const ProjectOperationReceiptStore =
 const OrientRuntime =
   require('./src/core/runtime/orient-runtime');
 
+const cleanupStartupFailure =
+  require('./src/core/runtime/startup-failure-cleanup');
+
 const AgentService =
   require('./src/application/agent/agent.service');
 
@@ -575,13 +578,19 @@ start().catch(async (error) => {
   const diagnostic = typeof error?.toDiagnostic === 'function'
     ? error.toDiagnostic()
     : { code: error?.code || 'STARTUP_FAILED', message: error?.message || String(error) };
-  logger.error('ORIENT ONE startup failed', diagnostic);
-  try {
-    await runtime.shutdown({ cancelQueued: false });
-  } catch {}
-  if (typeof persistenceRuntime.close === 'function') {
-    await persistenceRuntime.close().catch(() => {});
-  }
+  logger.error('ORIENT startup failed', diagnostic);
+  await cleanupStartupFailure({
+    eventStoreSubscriber,
+    runtime,
+    persistenceRuntime,
+    onCleanupError(stage, cleanupError) {
+      logger.error('Startup cleanup stage failed', {
+        stage,
+        code: cleanupError?.code || 'STARTUP_CLEANUP_FAILED',
+        message: cleanupError?.message || String(cleanupError)
+      });
+    }
+  });
   process.exitCode = 1;
 });
 

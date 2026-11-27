@@ -870,3 +870,4 @@ class RequestExecutionCoordinator {
 }
 
 module.exports = RequestExecutionCoordinator;
+module.exports.createApprovalSummary = createApprovalSummary;

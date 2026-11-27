@@ -86,11 +86,10 @@ test('SQLite cancellation committed after the read wins the terminal compare-and
   writer.db.run = (sql, params) => {
     if (!cancellationCommitted && sql.startsWith('UPDATE executions SET payload')) {
       cancellationCommitted = true;
-      canceller.executions.requestCancellation(
-        'execution-cancel-race',
-        'owner requested cancellation',
-        { tenantId: 'tenant-a' }
-      );
+      canceller.executions.update('execution-cancel-race', {
+        cancellationRequested: true,
+        cancellationReason: 'owner requested cancellation'
+      }, { tenantId: 'tenant-a' });
     }
     return originalRun(sql, params);
   };

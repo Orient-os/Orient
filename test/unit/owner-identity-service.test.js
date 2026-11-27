@@ -712,3 +712,33 @@ test('rejects non-string password inputs without invoking password verification'
     assert.equal(result.code, 'OWNER_LOGIN_FAILED');
   }
 });
+
+test('regenerates malformed persisted owner session IDs before restoring session identity', async t => {
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({
+    stateFile,
+    bootstrapPassword: 'temporary-owner-password-9F!x'
+  });
+  const login = await identity.login({
+    username: 'Admin',
+    password: 'temporary-owner-password-9F!x'
+  });
+  assert.equal(login.ok, true);
+
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  state.sessions[0].sessionId = 'not-a-canonical-session-id';
+  fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
+
+  const reloaded = new OwnerIdentityService({ stateFile });
+  const restored = reloaded.authenticate(login.token);
+  assert.ok(restored, 'a valid credential session remains restorable');
+  assert.notEqual(restored.sessionId, 'not-a-canonical-session-id');
+  assert.match(
+    restored.sessionId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+  );
+
+  const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(persisted.sessions[0].sessionId, restored.sessionId,
+    'the regenerated non-secret session identity must be durably persisted');
+});

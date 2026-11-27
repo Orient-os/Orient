@@ -175,6 +175,10 @@ class OrientRuntime {
       }));
     }
 
+    const workflowPersistenceEnabled = persistenceCapabilities
+      ? persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true
+      : true;
+
     this.infrastructureCoordinator = new RuntimeInfrastructureCoordinator({
       persistence,
       workflowScheduler,
@@ -190,9 +194,7 @@ class OrientRuntime {
       quotaPolicy,
       quotaService,
       deferStartup: deferRuntimeInfrastructureStartup,
-      workflowPersistenceEnabled: persistenceCapabilities
-        ? persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true
-        : true
+      workflowPersistenceEnabled
     });
 
     this.workflowRepository = this.infrastructureCoordinator.workflowRepository;
@@ -206,7 +208,10 @@ class OrientRuntime {
     this.workflowExecutionCoordinator = new WorkflowExecutionCoordinator({
       scheduler: this.workflowScheduler,
       workflowRepository: this.workflowRepository,
-      persistence: this.persistence,
+      // Workflow persistence is capability-gated independently from core
+      // execution persistence. Do not expose the adapter's event repository to
+      // an ephemeral-only workflow coordinator.
+      persistence: workflowPersistenceEnabled ? this.persistence : null,
       missionEventSink: this.infrastructureCoordinator.missionEventSink,
       tenantId: this.tenantId,
       userId: this.userId,

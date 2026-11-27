@@ -78,6 +78,7 @@ test('SQLite cancellation committed after the read wins the terminal compare-and
     executionId: 'execution-cancel-race',
     status: 'running',
     metadata: { tenantId: 'tenant-a' },
+    result: null,
     cancellationRequested: false
   }, { tenantId: 'tenant-a' });
 

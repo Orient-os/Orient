@@ -124,6 +124,31 @@ test('post-initialization interface checks do not claim behavioral guarantees ar
   assert.equal(verification.verified, undefined);
   for (const guarantee of resolved.guarantees) {
     assert.equal(verification.guaranteeVerification[guarantee].status, 'unverified');
-    assert.deepEqual(verification.guaranteeVerification[guarantee].evidence, []);
+    assert.ok(verification.guaranteeVerification[guarantee].evidence.length > 0);
+    assert.match(verification.guaranteeVerification[guarantee].reason, /strict-ci/);
+  }
+});
+
+
+test('every core persistence guarantee is linked to an existing adapter-specific behavioral test', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { EVIDENCE } = require('../../../../src/core/persistence/contracts/persistence-guarantee-evidence');
+  const { getCoreGuarantees } = require('../../../../src/core/persistence/contracts/persistence-capability-validator');
+  const root = path.resolve(__dirname, '../../../..');
+  const guarantees = getCoreGuarantees();
+
+  for (const adapter of ['json', 'sqlite', 'postgres']) {
+    for (const guarantee of guarantees) {
+      const evidence = EVIDENCE[adapter]?.[guarantee];
+      assert.ok(Array.isArray(evidence) && evidence.length > 0,
+        `${adapter}.${guarantee} must link behavioral evidence`);
+      for (const item of evidence) {
+        const absolutePath = path.join(root, item.file);
+        assert.equal(fs.existsSync(absolutePath), true, `missing evidence file: ${item.file}`);
+        assert.ok(fs.readFileSync(absolutePath, 'utf8').includes(item.testName),
+          `missing behavioral test "${item.testName}" in ${item.file}`);
+      }
+    }
   }
 });

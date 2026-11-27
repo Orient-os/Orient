@@ -349,3 +349,20 @@ test('runtime does not instantiate durable approval services when the capability
   assert.equal(runtime.approvalService, null);
   runtime.shutdown({ cancelQueued: false });
 });
+
+
+test('all profile requirement policies and guarantee lists are immutable', () => {
+  const profiles = require('../../../../src/core/persistence/contracts/persistence-profile-requirements');
+  for (const [profileName, profile] of Object.entries(profiles)) {
+    assert.equal(Object.isFrozen(profile), true, profileName + ' profile must be frozen');
+    assert.equal(Object.isFrozen(profile.requiredGuarantees), true,
+      profileName + ' core guarantee list must be frozen');
+    assert.equal(Object.isFrozen(profile.optionalCapabilities), true,
+      profileName + ' capability policy map must be frozen');
+    for (const [capability, policy] of Object.entries(profile.optionalCapabilities)) {
+      assert.equal(Object.isFrozen(policy), true, profileName + '.' + capability + ' policy must be frozen');
+      assert.equal(Object.isFrozen(policy.requiredGuarantees), true,
+        profileName + '.' + capability + ' guarantee list must be frozen');
+    }
+  }
+});

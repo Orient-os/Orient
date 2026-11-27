@@ -555,16 +555,25 @@ class SqliteApprovalRepository {
 class SqlitePersistence {
   constructor({ filePath } = {}) {
     this.db = new SqliteDatabase(filePath);
-    this.memoryTransactionCoordinator = new SqliteMemoryTransactionCoordinator(this.db);
-    this.memory = new SqliteMemoryRepository(this.db);
-    this.memoryAudit = new SqliteMemoryAuditRepository(this.db, this.memoryTransactionCoordinator);
-    this.executions = new SqliteExecutionRepository(this.db);
-    this.events = new SqliteEventRepository(this.db);
-    this.idempotency = new SqliteIdempotencyRepository(this.db);
-    this.checkpoints = new SqliteCheckpointRepository(this.db);
-    this.approvals = new SqliteApprovalRepository(this.db);
-    this.workflows = new SqliteWorkflowRepository(this.db);
-    this.workflowLeases = new SqliteWorkflowLeaseRepository(this.db);
+    try {
+      this.memoryTransactionCoordinator = new SqliteMemoryTransactionCoordinator(this.db);
+      this.memory = new SqliteMemoryRepository(this.db);
+      this.memoryAudit = new SqliteMemoryAuditRepository(this.db, this.memoryTransactionCoordinator);
+      this.executions = new SqliteExecutionRepository(this.db);
+      this.events = new SqliteEventRepository(this.db);
+      this.idempotency = new SqliteIdempotencyRepository(this.db);
+      this.checkpoints = new SqliteCheckpointRepository(this.db);
+      this.approvals = new SqliteApprovalRepository(this.db);
+      this.workflows = new SqliteWorkflowRepository(this.db);
+      this.workflowLeases = new SqliteWorkflowLeaseRepository(this.db);
+    } catch (error) {
+      try { this.db.close(); }
+      catch (closeError) {
+        if (!error.cause) error.cause = closeError;
+        else error.closeError = closeError;
+      }
+      throw error;
+    }
   }
 
   health() {

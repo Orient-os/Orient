@@ -1,8 +1,20 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 
 const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function terminalOutcome(execution) {
+  return {
+    status: execution.status,
+    result: execution.result ?? null,
+    error: execution.error ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null
+  };
+}
 
 function terminalConflict(currentStatus, requestedStatus) {
   const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
@@ -318,10 +330,10 @@ class ExecutionRepository {
       // The lock makes this read/decision/write one atomic terminal transition.
       // Once terminal, execution state is immutable; retries return the winner.
       if (TERMINAL_EXECUTION_STATUSES.has(current.status)) {
-        if (patch.status && patch.status !== current.status) {
-          throw terminalConflict(current.status, patch.status);
-        }
-        return current;
+        const requested = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId });
+        if (requested.status === current.status &&
+            isDeepStrictEqual(terminalOutcome(current), terminalOutcome(requested))) return current;
+        throw terminalConflict(current.status, requested.status);
       }
 
       // A durable cancellation request wins over a later terminal completion write.

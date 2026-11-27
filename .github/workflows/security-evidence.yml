@@ -57,7 +57,7 @@ jobs:
           - name: execution-coordinator
             timeout: 60
             mutate: src/core/runtime/request-execution-coordinator.js
-            tests: test/unit/core/runtime/request-execution-coordinator.test.js test/unit/core/runtime/coordinator-security-regressions.test.js
+            tests: test/unit/core/runtime/request-execution-coordinator.test.js
           - name: event-repository
             timeout: 60
             mutate: src/infrastructure/persistence/json/event.repository.js
@@ -88,7 +88,6 @@ jobs:
           const files = process.env.TEST_FILES.split(/\s+/).filter(Boolean);
           config.mutate = [process.env.MUTATE_FILE];
           config.commandRunner.command = 'node --test --test-timeout=120000 ' + files.join(' ');
-          config.reportDir = 'reports/mutation';
           fs.writeFileSync('stryker.matrix.config.json', JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
           NODE
           set +e

@@ -178,7 +178,7 @@ test('release refuses to remove a lock whose ownership token changed', async () 
     const ownerPath = path.join(lock.lockPath, 'owner.json');
     const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
     owner.token = '00000000-0000-4000-8000-000000000000';
-    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\\n', { mode: 0o600 });
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
     await assert.rejects(
       () => lease.release(),
       { code: 'PROJECT_WORKSPACE_LOCK_OWNERSHIP_LOST' }

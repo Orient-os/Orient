@@ -32,6 +32,20 @@ test('SQLite execution terminal states are immutable and tenant-scoped', t => {
     assert.equal(committed.status, status);
     assert.throws(
       () => persistence.executions.update(executionId, {
+        status,
+        result: { committed: 'tampered' }
+      }, { tenantId: 'tenant-a' }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+    );
+    assert.deepEqual(
+      persistence.executions.update(executionId, {
+        status,
+        result: { committed: status }
+      }, { tenantId: 'tenant-a' }).result,
+      { committed: status }
+    );
+    assert.throws(
+      () => persistence.executions.update(executionId, {
         status: status === 'completed' ? 'failed' : 'completed'
       }, { tenantId: 'tenant-a' }),
       error => error.code === 'EXECUTION_TERMINAL_CONFLICT'

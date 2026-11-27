@@ -22,7 +22,8 @@ class BuildExecutionService {
     plan = null,
     changeSet,
     definitionOfDone,
-    checks = []
+    checks = [],
+    beforeMutation = null
   } = {}) {
     if (
       !changeSet ||
@@ -51,7 +52,13 @@ class BuildExecutionService {
         }
       }
 
-      modification = await this.modifier.apply(changeSet);
+      if (beforeMutation !== null && typeof beforeMutation !== 'function') {
+        throw new TypeError('beforeMutation must be a function when provided');
+      }
+      if (beforeMutation && !usesTransactionRollback) await beforeMutation();
+      modification = usesTransactionRollback
+        ? await this.modifier.apply(changeSet, { beforeMutation })
+        : await this.modifier.apply(changeSet);
 
       let verification;
       try {

@@ -8,7 +8,9 @@ const {
 const PROFILE_REQUIREMENTS = require('./persistence-profile-requirements');
 const { getPersistenceManifest } = require('../../../infrastructure/persistence/manifests/persistence-manifest-registry');
 const PersistenceCapabilityError = require('./persistence-capability-errors');
-const { getPersistenceGuaranteeEvidence } = require('./persistence-guarantee-evidence');
+const { getPersistenceGuaranteeEvidence, getPersistenceCapabilityGuaranteeEvidence } = require('./persistence-guarantee-evidence');
+
+const TRUSTED_CONTRACTS = new WeakSet();
 
 function fail(code, message, details = {}) {
   throw new PersistenceCapabilityError({ code, message, ...details });
@@ -42,7 +44,9 @@ function validateManifestShape(manifest, profile) {
 
   for (const [name, entry] of Object.entries(manifest.capabilities)) {
     if (!entry || !Object.values(CAPABILITY_STATUS).includes(entry.status) ||
-        !Array.isArray(entry.guarantees) || !Array.isArray(entry.interfaces)) {
+        !Array.isArray(entry.guarantees) || !Array.isArray(entry.interfaces) ||
+        new Set(entry.guarantees).size !== entry.guarantees.length ||
+        entry.guarantees.some(value => typeof value !== 'string' || !value)) {
       fail('PERSISTENCE_MANIFEST_INVALID', 'Persistence capability declaration is invalid', {
         adapter: manifest.adapter, profile, phase: 'preflight', capability: name,
         expected: 'status-guarantees-and-interface-arrays'
@@ -78,9 +82,10 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
     });
   }
   if (!Array.isArray(enabledCapabilities) ||
-      enabledCapabilities.some(value => typeof value !== 'string' || !value)) {
+      enabledCapabilities.some(value => typeof value !== 'string' || !value) ||
+      new Set(enabledCapabilities).size !== enabledCapabilities.length) {
     fail('PERSISTENCE_MANIFEST_INVALID', 'Enabled persistence capabilities must be a list of names', {
-      adapter, profile, phase: 'preflight', expected: 'array-of-capability-names'
+      adapter, profile, phase: 'preflight', expected: 'unique-array-of-capability-names'
     });
   }
 
@@ -132,6 +137,16 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
       });
     }
 
+    const requiredGuarantees = policy.requiredGuarantees;
+    if (!Array.isArray(requiredGuarantees) || requiredGuarantees.length === 0 ||
+        requiredGuarantees.some(value => typeof value !== 'string' || !value) ||
+        new Set(requiredGuarantees).size !== requiredGuarantees.length) {
+      fail('PERSISTENCE_PROFILE_INCOMPATIBLE', 'Optional capability has no valid profile guarantee requirements', {
+        adapter, profile, phase: 'preflight', capability: name,
+        expected: 'non-empty-unique-required-guarantees'
+      });
+    }
+
     if (requested && declaration.status === CAPABILITY_STATUS.DEGRADED && !policy.degradationAllowed) {
       fail('PERSISTENCE_GUARANTEE_UNSATISFIED', 'The profile does not permit this capability to run degraded', {
         adapter, profile, phase: 'preflight', capability: name,
@@ -139,16 +154,39 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
       });
     }
 
+    let capabilityGuaranteeEvidence = Object.freeze({});
+    if (requested) {
+      for (const guarantee of requiredGuarantees) {
+        if (!declaration.guarantees.includes(guarantee)) {
+          fail('PERSISTENCE_GUARANTEE_UNSATISFIED', 'An enabled persistence capability does not declare a profile-required guarantee', {
+            adapter, profile, phase: 'preflight', capability: name, guarantee,
+            expected: 'declared-and-proven', actual: 'missing'
+          });
+        }
+      }
+      capabilityGuaranteeEvidence = getPersistenceCapabilityGuaranteeEvidence(adapter, name, requiredGuarantees);
+      if (!capabilityGuaranteeEvidence) {
+        fail('PERSISTENCE_GUARANTEE_EVIDENCE_MISSING', 'An enabled persistence capability has no adapter-specific behavioral evidence mapping', {
+          adapter, profile, phase: 'preflight', capability: name,
+          expected: requiredGuarantees, actual: 'missing'
+        });
+      }
+    }
+
     resolved[name] = Object.freeze({
       status: declaration.status,
-      enabled: declaration.status === CAPABILITY_STATUS.SUPPORTED ||
-        (requested && declaration.status === CAPABILITY_STATUS.DEGRADED),
+      enabled: requested && (
+        declaration.status === CAPABILITY_STATUS.SUPPORTED ||
+        (declaration.status === CAPABILITY_STATUS.DEGRADED && policy.degradationAllowed)
+      ),
+      requiredGuarantees: Object.freeze([...requiredGuarantees]),
       guarantees: declaration.guarantees,
+      guaranteeEvidence: capabilityGuaranteeEvidence,
       interfaces: declaration.interfaces
     });
   }
 
-  return Object.freeze({
+  const contract = Object.freeze({
     adapter,
     profile,
     contractVersion: manifest.contractVersion,
@@ -156,9 +194,25 @@ function resolvePersistenceCapabilities({ adapter, profile = 'local', enabledCap
     guaranteeEvidence,
     capabilities: Object.freeze(resolved)
   });
+  TRUSTED_CONTRACTS.add(contract);
+  return contract;
 }
 
-function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'post-initialization' } = {}) {
+function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'pre-initialization' } = {}) {
+  if (!TRUSTED_CONTRACTS.has(resolved)) {
+    fail('PERSISTENCE_CAPABILITY_CONTRACT_REQUIRED', 'Adapter verification requires a trusted preflight contract', {
+      adapter, profile: resolved?.profile, phase,
+      expected: 'trusted-preflight-contract', actual: 'untrusted-or-missing'
+    });
+  }
+  if (resolved.adapter !== adapter || resolved.contractVersion !== PERSISTENCE_CONTRACT_VERSION) {
+    fail('PERSISTENCE_MANIFEST_INVALID', 'Preflight contract identity does not match the constructed adapter', {
+      adapter, profile: resolved.profile, phase,
+      expected: { adapter, contractVersion: PERSISTENCE_CONTRACT_VERSION },
+      actual: { adapter: resolved.adapter, contractVersion: resolved.contractVersion }
+    });
+  }
+
   const requiredInterfaces = {
     executions: ['findById', 'insert', 'update'],
     events: ['append'],
@@ -169,7 +223,7 @@ function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'pos
     const repository = persistence?.[repositoryName];
     for (const method of methods) {
       if (typeof repository?.[method] !== 'function') {
-        fail('PERSISTENCE_CAPABILITY_MISMATCH', 'Initialized persistence adapter does not implement its required runtime interface', {
+        fail('PERSISTENCE_CAPABILITY_MISMATCH', 'Constructed persistence adapter does not implement its required runtime interface', {
           adapter, profile: resolved?.profile, phase,
           capability: repositoryName, guarantee: method,
           expected: 'function', actual: typeof repository?.[method]
@@ -192,22 +246,36 @@ function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'pos
     }
   }
 
-  return Object.freeze({
-    ...resolved,
-    interfacesVerified: true,
-    guaranteesVerified: false,
-    guaranteeVerification: Object.freeze(Object.fromEntries(
-      Object.entries(resolved?.guaranteeEvidence || {}).map(([guarantee, evidence]) => [guarantee, Object.freeze({
+  const guaranteeVerification = Object.fromEntries(
+    Object.entries(resolved?.guaranteeEvidence || {}).map(([guarantee, evidence]) => [guarantee, Object.freeze({
+      status: 'unverified',
+      evidence,
+      reason: 'behavioral-evidence-is-linked-to-strict-ci-but-not-executed-at-runtime'
+    })])
+  );
+  for (const [capabilityName, capability] of Object.entries(resolved?.capabilities || {})) {
+    if (!capability.enabled) continue;
+    for (const [guarantee, evidence] of Object.entries(capability.guaranteeEvidence || {})) {
+      guaranteeVerification[capabilityName + ':' + guarantee] = Object.freeze({
         status: 'unverified',
         evidence,
         reason: 'behavioral-evidence-is-linked-to-strict-ci-but-not-executed-at-runtime'
-      })])
-    ))
+      });
+    }
+  }
+
+  const verified = Object.freeze({
+    ...resolved,
+    interfacesVerified: true,
+    guaranteesVerified: false,
+    guaranteeVerification: Object.freeze(guaranteeVerification)
   });
+  TRUSTED_CONTRACTS.add(verified);
+  return verified;
 }
 
 function getCoreGuarantees() {
   return [...CORE_GUARANTEES];
 }
 
-module.exports = { resolvePersistenceCapabilities, verifyPersistenceAdapter, getCoreGuarantees };
+module.exports = { resolvePersistenceCapabilities, verifyPersistenceAdapter, getCoreGuarantees, isTrustedPersistenceContract: contract => TRUSTED_CONTRACTS.has(contract) };

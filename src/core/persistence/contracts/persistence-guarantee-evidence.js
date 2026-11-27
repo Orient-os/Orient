@@ -117,6 +117,90 @@ const EVIDENCE = Object.freeze({
   })
 });
 
+const CAPABILITY_EVIDENCE = Object.freeze({
+  json: Object.freeze({
+    'workflow.ephemeral': Object.freeze({
+      'workflow.persistence.ephemeral': Object.freeze([Object.freeze({
+        file: 'test/unit/infrastructure/persistence-factory.test.js',
+        testName: 'JSON persistence exposes no durable workflow repositories'
+      })])
+    }),
+    'execution.cancellation': Object.freeze({
+      'execution.cancellation.durability': Object.freeze([Object.freeze({
+        file: 'test/unit/infrastructure/persistence/json/execution-repository.cancellation.test.js',
+        testName: 'execution cancellation is durable, tenant-scoped, and idempotent'
+      })])
+    })
+  }),
+  sqlite: Object.freeze({
+    'approval.durable': Object.freeze({
+      'approval.decision.atomicity': Object.freeze([Object.freeze({
+        file: 'test/unit/infrastructure/sqlite-persistence.test.js',
+        testName: 'SQLite approval storage survives restart and remains single-use'
+      })])
+    }),
+    'workflow.durable': Object.freeze({
+      'workflow.state.durability': Object.freeze([Object.freeze({
+        file: 'test/unit/infrastructure/sqlite-persistence.test.js',
+        testName: 'SQLite workflow outbox is bounded, tenant-scoped, and revision-checked'
+      }), Object.freeze({
+        file: 'test/unit/infrastructure/sqlite-persistence.test.js',
+        testName: 'SQLite workflow repair uses revision compare-and-set and rejects stale writers'
+      })])
+    })
+  }),
+  postgres: Object.freeze({
+    'approval.durable': Object.freeze({
+      'approval.decision.atomicity': Object.freeze([Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL approval authorization is durable, tenant-scoped and replay-safe'
+      })])
+    }),
+    'execution.resumeLease': Object.freeze({
+      'execution.resume.lease-ownership': Object.freeze([Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL resume leases are atomic, tenant-scoped, and releasable only by the owner'
+      })])
+    }),
+    'worker.fencing': Object.freeze({
+      'worker.lease.fencing': Object.freeze([Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL fencing rejects stale writes after a lease takeover'
+      })])
+    }),
+    'workflow.durable': Object.freeze({
+      'workflow.state.durability': Object.freeze([Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL async mission recovery repairs then verifies a durable workflow snapshot'
+      })])
+    }),
+    'execution.cancellation': Object.freeze({
+      'execution.cancellation.durability': Object.freeze([Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL execution cancellation is durable and tenant-scoped'
+      }), Object.freeze({
+        file: 'test/integration/postgres-persistence.integration.test.js',
+        testName: 'PostgreSQL cancellation wins terminal completion race'
+      })])
+    })
+  })
+});
+
+function getPersistenceCapabilityGuaranteeEvidence(adapter, capability, guarantees) {
+  const declarations = CAPABILITY_EVIDENCE[adapter]?.[capability];
+  if (!declarations) return null;
+  const resolved = {};
+  for (const guarantee of guarantees || []) {
+    const evidence = declarations[guarantee];
+    if (!Array.isArray(evidence) || evidence.length === 0) return null;
+    resolved[guarantee] = Object.freeze(evidence.map(item => Object.freeze({
+      file: item.file,
+      testName: item.testName
+    })));
+  }
+  return Object.freeze(resolved);
+}
+
 function getPersistenceGuaranteeEvidence(adapter, guarantees) {
   const adapterEvidence = EVIDENCE[adapter];
   if (!adapterEvidence) return null;
@@ -133,4 +217,4 @@ function getPersistenceGuaranteeEvidence(adapter, guarantees) {
   return Object.freeze(resolved);
 }
 
-module.exports = { EVIDENCE, getPersistenceGuaranteeEvidence };
+module.exports = { EVIDENCE, CAPABILITY_EVIDENCE, getPersistenceGuaranteeEvidence, getPersistenceCapabilityGuaranteeEvidence };

@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const createPersistence = require('../../../../src/infrastructure/persistence/persistence-factory');
 
 const RuntimeInfrastructureCoordinator =
   require('../../../../src/core/runtime/runtime-infrastructure-coordinator');
@@ -179,4 +184,139 @@ test('runtime rejects workflow execution when neither durable nor explicitly deg
       error.capability === 'workflow.durable'
   );
   await runtime.shutdown({ cancelQueued: false });
+});
+
+
+test('disabled durable workflow capability does not attach repositories, recover state, or initialize workflow quotas', async () => {
+  let recoveryCalls = 0;
+  let quotaCalls = 0;
+  const persistence = {
+    isAsync: true,
+    db: {},
+    events: {
+      async appendMissionEvent() {},
+      async findByAggregateId() { recoveryCalls += 1; return []; }
+    },
+    workflows: {
+      async findAll() { recoveryCalls += 1; return []; },
+      async findById() { recoveryCalls += 1; return null; },
+      async repair() { recoveryCalls += 1; return null; }
+    },
+    workflowLeases: {},
+    tenantQuotas: {
+      async ensureTenant() { quotaCalls += 1; }
+    }
+  };
+  const coordinator = new RuntimeInfrastructureCoordinator({
+    persistence,
+    tenantId: 'tenant-disabled-workflows',
+    deferStartup: true,
+    workflowPersistenceEnabled: false
+  });
+
+  assert.equal(coordinator.workflowRepository, null);
+  assert.equal(coordinator.missionEventSink, null);
+  assert.equal(coordinator.missionEventRecovery, null);
+  assert.equal(coordinator.tenantQuotaRepository, null);
+  assert.notEqual(coordinator.workflowScheduler.async, true);
+  await coordinator.start();
+  assert.equal(recoveryCalls, 0);
+  assert.equal(quotaCalls, 0);
+  await coordinator.shutdown();
+});
+
+
+test('concrete persistence runtime defers startup side effects until interface verification', async () => {
+  const OrientRuntime = require('../../../../src/core/runtime/orient-runtime');
+  const {
+    resolvePersistenceCapabilities,
+    verifyPersistenceAdapter
+  } = require('../../../../src/core/persistence/contracts/persistence-capability-validator');
+  let quotaInitializations = 0;
+  const persistence = {
+    health: () => ({ adapter: 'postgres' }),
+    isAsync: true,
+    db: {},
+    executions: { findById() {}, insert() {}, update() {} },
+    events: { append() {}, appendMissionEvent() {}, findByAggregateId() {} },
+    idempotency: { begin() {}, complete() {}, fail() {} },
+    workflows: { createWithEvents() {}, save() {}, findById() {}, findAll() {} },
+    workflowLeases: {
+      tryAcquire() {}, save() {}, renewIfOwned() {}, findByWorkflowId() {}, delete() {}
+    },
+    tenantQuotas: {
+      async ensureTenant() { quotaInitializations += 1; }
+    }
+  };
+  const resolved = resolvePersistenceCapabilities({
+    adapter: 'postgres',
+    profile: 'postgres',
+    enabledCapabilities: ['workflow.durable']
+  });
+  const runtime = new OrientRuntime({
+    toolRegistry: { requireAuthorization() {} },
+    agentOrchestrator: { async plan() { return { plan: { steps: [] }, validation: { valid: true, steps: [] } }; } },
+    persistence,
+    persistenceCapabilities: resolved
+  });
+
+  assert.equal(quotaInitializations, 0);
+  assert.equal(runtime.infrastructureCoordinator.started, false);
+  await assert.rejects(
+    runtime.start(),
+    error => error.code === 'PERSISTENCE_CAPABILITY_CONTRACT_UNVERIFIED'
+  );
+  assert.equal(quotaInitializations, 0);
+
+  runtime.persistenceCapabilities = verifyPersistenceAdapter({
+    adapter: 'postgres',
+    persistence,
+    resolved
+  });
+  await runtime.start();
+  assert.equal(quotaInitializations, 1);
+  await runtime.shutdown({ cancelQueued: false });
+});
+
+
+test('ephemeral-only runtime never writes workflow events through the persistence adapter', async t => {
+  const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-ephemeral-workflow-'));
+  t.after(() => fs.rmSync(dataDirectory, { recursive: true, force: true }));
+
+  const persistenceRuntime = createPersistence({
+    persistenceMode: 'json',
+    persistenceProfile: 'local',
+    enabledPersistenceCapabilities: ['workflow.ephemeral'],
+    agentDataDirectory: dataDirectory
+  });
+  const persistenceCapabilities = persistenceRuntime.verify();
+  const runtime = new (require('../../../../src/core/runtime/orient-runtime'))({
+    toolRegistry: { requireAuthorization() {} },
+    agentOrchestrator: {
+      async plan() {
+        return { plan: { steps: [] }, validation: { valid: true, steps: [] } };
+      }
+    },
+    persistence: persistenceRuntime.adapter,
+    persistenceCapabilities
+  });
+  t.after(async () => {
+    await runtime.shutdown({ cancelQueued: false });
+    await persistenceRuntime.close();
+  });
+
+  runtime.workflowExecutionCoordinator.executeRequest = async () => ({ completed: true });
+
+  assert.equal(persistenceCapabilities.capabilities['workflow.durable'].enabled, false);
+  assert.equal(persistenceCapabilities.capabilities['workflow.ephemeral'].enabled, true);
+  assert.equal(runtime.infrastructureCoordinator.missionEventSink, null);
+  assert.equal(runtime.workflowExecutionCoordinator.missionEventSink, null);
+  assert.equal(runtime.workflowExecutionCoordinator.persistence, null);
+
+  const result = await runtime.executeWorkflow('ephemeral workflow request');
+
+  assert.deepEqual(result, { completed: true });
+  assert.deepEqual(persistenceRuntime.adapter.events.findAll(), []);
+  assert.equal(persistenceRuntime.adapter.workflows, undefined);
+  assert.equal(persistenceRuntime.adapter.workflowLeases, undefined);
 });

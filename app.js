@@ -506,12 +506,12 @@ async function start() {
       'ORIENT_ALLOW_UNSANDBOXED to restore fail-closed behavior.'
     );
   }
-  if (typeof persistenceRuntime.initialize === 'function') {
-    await persistenceRuntime.initialize();
-  }
   if (typeof persistenceRuntime.verify === 'function') {
     persistenceRuntime.capabilities = persistenceRuntime.verify();
     runtime.persistenceCapabilities = persistenceRuntime.capabilities;
+  }
+  if (typeof persistenceRuntime.initialize === 'function') {
+    await persistenceRuntime.initialize();
   }
   await accessAuditRepository.initialize();
   await runtime.start();

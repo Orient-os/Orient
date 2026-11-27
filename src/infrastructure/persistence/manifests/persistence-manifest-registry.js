@@ -32,8 +32,8 @@ const MANIFESTS = Object.freeze({
       'execution.resumeLease': capability(UNSUPPORTED),
       'worker.fencing': capability(UNSUPPORTED),
       'workflow.durable': capability(UNSUPPORTED),
-      'workflow.ephemeral': capability(DEGRADED, ['workflow.persistence.unavailable']),
-      'execution.cancellation': capability(SUPPORTED, [], ['executions.requestCancellation'])
+      'workflow.ephemeral': capability(DEGRADED, ['workflow.persistence.ephemeral']),
+      'execution.cancellation': capability(SUPPORTED, ['execution.cancellation.durability'], ['executions.requestCancellation'])
     })
   }),
   sqlite: Object.freeze({
@@ -48,13 +48,13 @@ const MANIFESTS = Object.freeze({
       'event.identity.idempotency'
     ]),
     capabilities: Object.freeze({
-      'approval.durable': capability(SUPPORTED, [], [
+      'approval.durable': capability(SUPPORTED, ['approval.decision.atomicity'], [
         'approvals.findByExecution', 'approvals.findPending', 'approvals.save',
         'approvals.findById', 'approvals.consume', 'approvals.recordDecision'
       ]),
       'execution.resumeLease': capability(UNSUPPORTED),
       'worker.fencing': capability(UNSUPPORTED),
-      'workflow.durable': capability(SUPPORTED, [], [
+      'workflow.durable': capability(SUPPORTED, ['workflow.state.durability'], [
         'workflows.save', 'workflows.findById', 'workflows.findAll',
         'workflowLeases.tryAcquire', 'workflowLeases.save',
         'workflowLeases.renewIfOwned', 'workflowLeases.findByWorkflowId',
@@ -76,27 +76,27 @@ const MANIFESTS = Object.freeze({
       'event.identity.idempotency'
     ]),
     capabilities: Object.freeze({
-      'approval.durable': capability(SUPPORTED, [], [
+      'approval.durable': capability(SUPPORTED, ['approval.decision.atomicity'], [
         'approvals.findByExecution', 'approvals.findPending', 'approvals.save',
         'approvals.findById', 'approvals.consume', 'approvals.recordDecision'
       ]),
-      'execution.resumeLease': capability(SUPPORTED, [], [
+      'execution.resumeLease': capability(SUPPORTED, ['execution.resume.lease-ownership'], [
         'checkpoints.acquireResumeLease', 'checkpoints.renewResumeLease',
         'checkpoints.releaseResumeLease'
       ]),
-      'worker.fencing': capability(SUPPORTED, [], [
+      'worker.fencing': capability(SUPPORTED, ['worker.lease.fencing'], [
         'workers.register', 'workers.heartbeat', 'workers.unregister', 'workers.findById',
         'workflowLeases.tryAcquire', 'workflowLeases.save', 'workflowLeases.renewIfOwned',
         'workflowLeases.assertCurrent', 'workflowLeases.delete'
       ]),
-      'workflow.durable': capability(SUPPORTED, [], [
+      'workflow.durable': capability(SUPPORTED, ['workflow.state.durability'], [
         'workflows.createWithEvents', 'workflows.save', 'workflows.findById', 'workflows.findAll',
         'workflowLeases.tryAcquire', 'workflowLeases.save',
         'workflowLeases.renewIfOwned', 'workflowLeases.findByWorkflowId',
         'workflowLeases.delete'
       ]),
       'workflow.ephemeral': capability(UNSUPPORTED),
-      'execution.cancellation': capability(SUPPORTED, [], ['executions.requestCancellation'])
+      'execution.cancellation': capability(SUPPORTED, ['execution.cancellation.durability'], ['executions.requestCancellation'])
     })
   })
 });

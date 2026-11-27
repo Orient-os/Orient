@@ -24,7 +24,8 @@ class RuntimeInfrastructureCoordinator {
     maxToolInputChars = 50000,
     quotaPolicy = null,
     quotaService = null,
-    deferStartup = false
+    deferStartup = false,
+    workflowPersistenceEnabled = true
   } = {}) {
     this.persistence = persistence;
     this.deferStartup = deferStartup === true;
@@ -32,27 +33,29 @@ class RuntimeInfrastructureCoordinator {
     this.startPromise = null;
     this.ownsWorkflowScheduler = !workflowScheduler;
     this.tenantId = tenantId || 'local';
+    this.workflowPersistenceEnabled = workflowPersistenceEnabled === true;
 
-    this.workflowRepository = persistence?.workflows || null;
-    this.missionEventSink = persistence?.events?.appendMissionEvent
+    this.workflowRepository = this.workflowPersistenceEnabled ? persistence?.workflows || null : null;
+    this.missionEventSink = this.workflowPersistenceEnabled && persistence?.events?.appendMissionEvent
       ? new DurableMissionEventSink({
           eventRepository: persistence.events,
           workflowRepository: this.workflowRepository,
           tenantId: this.tenantId
         })
       : null;
-    this.missionEventRecovery = persistence?.events?.findByAggregateId &&
+    this.missionEventRecovery = this.workflowPersistenceEnabled && persistence?.events?.findByAggregateId &&
       this.workflowRepository?.findById && this.workflowRepository?.repair
       ? new MissionEventRecovery({
           eventRepository: persistence.events,
           workflowRepository: this.workflowRepository
         })
       : null;
-    this.tenantQuotaRepository =
-      persistence?.tenantQuotas ||
+    this.tenantQuotaRepository = this.workflowPersistenceEnabled
+      ? persistence?.tenantQuotas ||
       (persistence?.isAsync && persistence?.db
         ? new PostgresTenantQuotaRepository(persistence.db)
-        : null);
+        : null)
+      : null;
 
     this.tenantQuotaPolicy =
       quotaPolicy instanceof TenantQuotaPolicy || (quotaPolicy && typeof quotaPolicy.toJSON === 'function')
@@ -67,7 +70,7 @@ class RuntimeInfrastructureCoordinator {
 
     this.workflowScheduler =
       workflowScheduler ||
-      (persistence?.isAsync
+      (this.workflowPersistenceEnabled && persistence?.isAsync
         ? new AsyncWorkflowScheduler({
             maxConcurrent,
             maxQueueDepth,
@@ -90,7 +93,7 @@ class RuntimeInfrastructureCoordinator {
             leaseDurationMs,
             tenantId: this.tenantId,
             workflowRepository: this.workflowRepository,
-            leaseStore: persistence?.workflowLeases
+            leaseStore: this.workflowPersistenceEnabled && persistence?.workflowLeases
               ? new WorkflowLeaseStore({
                   repository: persistence.workflowLeases,
                   tenantId: this.tenantId

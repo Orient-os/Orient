@@ -227,7 +227,19 @@ class ProjectModifier {
       throw error;
     }
 
-    return { rolledBack: true };
+    return {
+      rolledBack: true,
+      restored: attemptedChanges.map(attempted => {
+        const snapshot = snapshotsByPath.get(attempted.path);
+        return {
+          path: attempted.path,
+          existed: snapshot.existed,
+          contentSha256: snapshot.existed
+            ? crypto.createHash('sha256').update(snapshot.content).digest('hex')
+            : null
+        };
+      })
+    };
   }
 
   async apply(changeSet) {

@@ -276,7 +276,7 @@ class ProjectModifier {
     } catch (error) {
       if (attemptedChanges.length > 0) {
         try {
-          await this.rollbackTransaction({ snapshots, attemptedChanges });
+          error.rollback = await this.rollbackTransaction({ snapshots, attemptedChanges });
         } catch (rollbackError) {
           const combinedError = new Error(
             `Modification failed and rollback failed: ${error.message}`

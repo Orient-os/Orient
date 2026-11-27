@@ -41,18 +41,17 @@ class ProjectVerifier {
             workspace: this.workspace
           });
 
-        const passed =
-          result === false
-            ? false
-            : result &&
-              typeof result.passed === 'boolean'
-              ? result.passed
-              : true;
+        const validResult = result !== null &&
+          typeof result === 'object' &&
+          !Array.isArray(result) &&
+          typeof result.passed === 'boolean';
 
         results.push({
           id: check.id,
-          passed,
-          result
+          passed: validResult && result.passed === true,
+          ...(validResult
+            ? { result }
+            : { error: 'VERIFICATION_RESULT_INVALID: check must return an object with an explicit boolean passed field' })
         });
       } catch (error) {
         results.push({
@@ -77,7 +76,7 @@ class ProjectVerifier {
 
     return new VerificationResult({
       status:
-        failed === 0
+        definitionSatisfied
           ? 'passed'
           : 'failed',
       checks: results,

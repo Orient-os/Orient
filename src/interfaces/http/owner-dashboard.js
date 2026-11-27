@@ -101,6 +101,14 @@
         ].join(' · ');
         card.append(heading, details);
         const summary = approval.summary;
+        if (summary && summary.kind === 'file_change') {
+          const reviewNotice = document.createElement('p');
+          reviewNotice.className = 'muted';
+          reviewNotice.textContent = typeof summary.reviewNotice === 'string' && summary.reviewNotice
+            ? summary.reviewNotice
+            : 'بصمة الملف الحالي لا تمنع الكتابة المتزامنة؛ لا توجد حماية بقفل عابر للعمليات حتى الآن.';
+          card.append(reviewNotice);
+        }
         let canApprove = Boolean(summary && summary.kind === 'file_change' && Array.isArray(summary.changes) &&
           summary.changes.length > 0 && summary.changes.length === summary.changeCount);
         if (summary && summary.kind === 'file_change' && Array.isArray(summary.changes)) {
@@ -121,7 +129,7 @@
             preview.textContent = String(change.proposedContent || '');
             contentDetails.append(contentSummary, preview);
             changeCard.append(changeTitle, hashes, contentDetails);
-            if (change.contentTruncated || !change.path || !['create', 'update'].includes(change.action) || !change.proposedContentSha256 || change.contentHashValid !== true || (change.action === 'update' && !change.expectedContentSha256)) {
+            if (change.contentTruncated || !change.path || !['create', 'update'].includes(change.action) || !change.proposedContentSha256 || change.contentHashValid !== true || (change.action === 'update' && (typeof change.expectedContentSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(change.expectedContentSha256)))) {
               canApprove = false;
               const warning = document.createElement('p');
               warning.className = 'muted';

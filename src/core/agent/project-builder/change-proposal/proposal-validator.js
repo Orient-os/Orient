@@ -70,19 +70,27 @@ class ProposalValidator {
           );
         }
 
-        if (action === 'update' && typeof proposal.expectedContentSha256 === 'string') {
-          const current = await this.workspace.readText(path);
-          const actualContentSha256 = crypto
-            .createHash('sha256')
-            .update(current)
-            .digest('hex');
+        if (action === 'update') {
+          const expectedContentSha256 = proposal.expectedContentSha256;
+          if (typeof expectedContentSha256 !== 'string') {
+            const error = new Error(`Update proposal requires a before-image SHA-256 digest: ${path}`);
+            error.code = 'CHANGE_PRECONDITION_REQUIRED';
+            throw error;
+          }
+          if (!/^[a-f0-9]{64}$/i.test(expectedContentSha256)) {
+            const error = new Error(`Update proposal has an invalid before-image SHA-256 digest: ${path}`);
+            error.code = 'CHANGE_PRECONDITION_INVALID';
+            throw error;
+          }
 
-          if (actualContentSha256 !== proposal.expectedContentSha256) {
+          const current = await this.workspace.readText(path);
+          const actualContentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+          if (actualContentSha256 !== expectedContentSha256.toLowerCase()) {
             const error = new Error(
               `Change precondition failed: ${path} was modified after the proposal was created`
             );
             error.code = 'CHANGE_PRECONDITION_FAILED';
-            error.expectedContentSha256 = proposal.expectedContentSha256;
+            error.expectedContentSha256 = expectedContentSha256.toLowerCase();
             error.actualContentSha256 = actualContentSha256;
             throw error;
           }

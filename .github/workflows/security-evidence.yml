@@ -1,0 +1,155 @@
+name: ORIENT — Mutation and Fuzzing Evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/security-evidence.yml"
+      - "stryker.config.json"
+      - "security/mutation-equivalence-allowlist.json"
+      - "scripts/verify-mutation-evidence.js"
+      - "fuzz/**"
+      - "corpus/**"
+      - "src/core/security/**"
+      - "src/core/runtime/**"
+      - "src/infrastructure/persistence/json/**"
+      - "test/unit/owner-identity-service.test.js"
+      - "test/unit/core/runtime/**"
+      - "test/unit/infrastructure/**"
+  push:
+    branches: ["main", "security/mutation-fuzzing-mainline"]
+    paths:
+      - ".github/workflows/security-evidence.yml"
+      - "stryker.config.json"
+      - "security/mutation-equivalence-allowlist.json"
+      - "scripts/verify-mutation-evidence.js"
+      - "fuzz/**"
+      - "corpus/**"
+      - "src/core/security/**"
+      - "src/core/runtime/**"
+      - "src/infrastructure/persistence/json/**"
+      - "test/unit/owner-identity-service.test.js"
+      - "test/unit/core/runtime/**"
+      - "test/unit/infrastructure/**"
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: orient-security-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Mutation — ${{ matrix.name }} (Node 22)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: owner-identity
+            timeout: 60
+            mutate: src/core/security/owner-identity-service.js
+            tests: test/unit/owner-identity-service.test.js
+          - name: execution-coordinator
+            timeout: 60
+            mutate: src/core/runtime/request-execution-coordinator.js
+            tests: test/unit/core/runtime/request-execution-coordinator.test.js test/unit/core/runtime/coordinator-security-regressions.test.js
+          - name: event-repository
+            timeout: 60
+            mutate: src/infrastructure/persistence/json/event.repository.js
+            tests: test/unit/infrastructure/event-repository.test.js test/unit/infrastructure/event-repository-hardening.test.js test/unit/infrastructure/event-repository-concurrency.test.js test/unit/infrastructure/persistence/json/event-repository.security.test.js test/unit/infrastructure/persistence/json/event-repository-tenant-boundaries.test.js
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          check-latest: true
+
+      - name: Install locked application dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run isolated mutation analysis and enforce triage
+        shell: bash
+        env:
+          MUTATE_FILE: ${{ matrix.mutate }}
+          TEST_FILES: ${{ matrix.tests }}
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts reports/mutation
+          node <<'NODE'
+          const fs = require('node:fs');
+          const config = JSON.parse(fs.readFileSync('stryker.config.json', 'utf8'));
+          const files = process.env.TEST_FILES.split(/\s+/).filter(Boolean);
+          config.mutate = [process.env.MUTATE_FILE];
+          config.commandRunner.command = 'node --test --test-timeout=120000 ' + files.join(' ');
+          config.reportDir = 'reports/mutation';
+          fs.writeFileSync('stryker.matrix.config.json', JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+          NODE
+          set +e
+          npx --yes --package=@stryker-mutator/core@10.1.1 stryker run stryker.matrix.config.json 2>&1 | tee "artifacts/stryker-${{ matrix.name }}.log"
+          stryker_status=${PIPESTATUS[0]}
+          set -e
+          node scripts/verify-mutation-evidence.js reports/mutation/mutation.json | tee "artifacts/mutation-triage-${{ matrix.name }}.json"
+          exit "$stryker_status"
+
+      - name: Upload mutation reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orient-mutation-${{ matrix.name }}-evidence
+          path: |
+            artifacts/stryker-${{ matrix.name }}.log
+            artifacts/mutation-triage-${{ matrix.name }}.json
+            reports/mutation/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  fuzz-regression:
+    name: Jazzer corpus regression (Node 22)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          check-latest: true
+
+      - name: Install locked application dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Replay deterministic regression corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/jazzer
+          npx --yes --package=@jazzer.js/core@4.0.0 jazzer fuzz/owner-auth.fuzz.js --sync --mode=regression corpus/owner-auth 2>&1 | tee artifacts/jazzer/owner-auth-regression.log
+          npx --yes --package=@jazzer.js/core@4.0.0 jazzer fuzz/event-normalize.fuzz.js --sync --mode=regression corpus/event-normalize 2>&1 | tee artifacts/jazzer/event-normalize-regression.log
+
+      - name: Run bounded coverage-guided campaigns
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes --package=@jazzer.js/core@4.0.0 jazzer fuzz/owner-auth.fuzz.js --sync corpus/owner-auth -- -max_total_time=45 -print_final_stats=1 2>&1 | tee artifacts/jazzer/owner-auth-fuzz.log
+          npx --yes --package=@jazzer.js/core@4.0.0 jazzer fuzz/event-normalize.fuzz.js --sync corpus/event-normalize -- -max_total_time=45 -print_final_stats=1 2>&1 | tee artifacts/jazzer/event-normalize-fuzz.log
+
+      - name: Upload fuzzing evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orient-jazzer-evidence
+          path: |
+            artifacts/jazzer/**
+            corpus/**
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: warn
+          retention-days: 30

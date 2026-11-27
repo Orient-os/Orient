@@ -1164,3 +1164,17 @@ test('project-change approval summary discloses that the before-image digest is 
   assert.match(summary.reviewNotice, /لا تقفل الملف/);
   assert.match(summary.reviewNotice, /لا توجد حتى الآن آلية قفل عابرة للعمليات/);
 });
+
+
+test('project-change approval summary rejects malformed hashes instead of truncating them into valid prefixes', () => {
+  const summary = RequestExecutionCoordinator.createApprovalSummary('project.execute_change', {
+    proposals: [{
+      action: 'update',
+      path: 'src/example.js',
+      content: 'new content',
+      expectedContentSha256: 'a'.repeat(64) + 'trailing-data'
+    }]
+  });
+
+  assert.equal(summary.changes[0].expectedContentSha256, null);
+});

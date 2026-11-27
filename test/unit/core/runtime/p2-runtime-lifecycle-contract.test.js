@@ -44,6 +44,8 @@ test('execute, executeWorkflow, and resume reject before READY without delegatio
   let executeCalls = 0;
   let workflowCalls = 0;
   let resumeCalls = 0;
+  let cancelCalls = 0;
+  let approvalDecisionCalls = 0;
 
   runtime.requestExecutionCoordinator.execute = async () => {
     executeCalls += 1;
@@ -57,18 +59,35 @@ test('execute, executeWorkflow, and resume reject before READY without delegatio
     resumeCalls += 1;
     return { accepted: true };
   };
+  runtime.persistence = {
+    executions: {
+      requestCancellation: async () => {
+        cancelCalls += 1;
+        return { executionId: 'execution-not-ready', status: 'cancelled' };
+      }
+    }
+  };
+  runtime.workflowExecutionCoordinator.cancelApprovalWorkflow = async () => true;
+  runtime.approvalService = {
+    decide: async () => {
+      approvalDecisionCalls += 1;
+      return { decision: { status: 'approved' } };
+    }
+  };
 
   for (const operation of [
     () => runtime.execute({ goal: 'must not run' }),
     () => runtime.executeWorkflow({ goal: 'must not run' }),
-    () => runtime.resume('execution-not-ready')
+    () => runtime.resume('execution-not-ready'),
+    () => runtime.cancelExecution('execution-not-ready'),
+    () => runtime.decideApproval({ approvalId: 'approval-not-ready', decision: 'approved' })
   ]) {
     await assert.rejects(operation, error => error.code === 'RUNTIME_NOT_READY');
   }
 
   assert.deepEqual(
-    { executeCalls, workflowCalls, resumeCalls },
-    { executeCalls: 0, workflowCalls: 0, resumeCalls: 0 }
+    { executeCalls, workflowCalls, resumeCalls, cancelCalls, approvalDecisionCalls },
+    { executeCalls: 0, workflowCalls: 0, resumeCalls: 0, cancelCalls: 0, approvalDecisionCalls: 0 }
   );
 });
 

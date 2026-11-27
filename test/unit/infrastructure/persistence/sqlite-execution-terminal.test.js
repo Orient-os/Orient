@@ -61,3 +61,48 @@ test('SQLite execution terminal states are immutable and tenant-scoped', t => {
     assert.deepEqual(persisted.result, { committed: status });
   }
 });
+
+
+test('SQLite cancellation committed after the read wins the terminal compare-and-set', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-execution-cancel-race-'));
+  const filePath = path.join(directory, 'runtime.db');
+  const writer = new SqlitePersistence({ filePath });
+  const canceller = new SqlitePersistence({ filePath });
+  t.after(() => {
+    writer.close();
+    canceller.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  writer.executions.insert({
+    executionId: 'execution-cancel-race',
+    status: 'running',
+    metadata: { tenantId: 'tenant-a' },
+    cancellationRequested: false
+  }, { tenantId: 'tenant-a' });
+
+  const originalRun = writer.db.run.bind(writer.db);
+  let cancellationCommitted = false;
+  writer.db.run = (sql, params) => {
+    if (!cancellationCommitted && sql.startsWith('UPDATE executions SET payload')) {
+      cancellationCommitted = true;
+      canceller.executions.requestCancellation(
+        'execution-cancel-race',
+        'owner requested cancellation',
+        { tenantId: 'tenant-a' }
+      );
+    }
+    return originalRun(sql, params);
+  };
+
+  const persisted = writer.executions.update('execution-cancel-race', {
+    status: 'completed',
+    result: { shouldNotCommit: true }
+  }, { tenantId: 'tenant-a' });
+
+  assert.equal(cancellationCommitted, true);
+  assert.equal(persisted.status, 'running');
+  assert.equal(persisted.cancellationRequested, true);
+  assert.equal(persisted.cancellationReason, 'owner requested cancellation');
+  assert.equal(persisted.result, null);
+});

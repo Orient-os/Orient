@@ -1,6 +1,7 @@
 'use strict';
 
 async function cleanupStartupFailure({
+  eventStoreSubscriber = null,
   runtime,
   persistenceRuntime = null,
   onCleanupError = () => {}
@@ -19,6 +20,9 @@ async function cleanupStartupFailure({
     }
   };
 
+  if (eventStoreSubscriber && typeof eventStoreSubscriber.stop === 'function') {
+    await attempt('observations', () => eventStoreSubscriber.stop());
+  }
   if (runtime && typeof runtime.shutdown === 'function') {
     await attempt('runtime', () => runtime.shutdown({ cancelQueued: false }));
   }

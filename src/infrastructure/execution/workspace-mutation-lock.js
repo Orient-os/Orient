@@ -176,11 +176,15 @@ class WorkspaceMutationLock {
 
   inspect() {
     try {
-      return readOwner(this.lockPath);
+      const stats = fs.lstatSync(this.lockPath);
+      if (!stats.isDirectory() || stats.isSymbolicLink()) {
+        fail('Workspace lock path is not a trusted directory', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+      }
     } catch (error) {
       if (error.code === 'ENOENT') return null;
       throw error;
     }
+    return readOwner(this.lockPath);
   }
 
   recover({ expectedToken, operatorId, reason } = {}) {

@@ -29,9 +29,16 @@ test('JSON execution terminal states are immutable across retries and repository
     }, { tenantId: 'tenant-a' });
     assert.equal(committed.status, status);
 
+    assert.throws(
+      () => repository.update(executionId, {
+        status,
+        result: { committed: 'tampered' }
+      }, { tenantId: 'tenant-a' }),
+      error => error.code === 'EXECUTION_TERMINAL_CONFLICT' && error.status === 409
+    );
     const repeated = repository.update(executionId, {
       status,
-      result: { committed: 'tampered' }
+      result: { committed: status }
     }, { tenantId: 'tenant-a' });
     assert.deepEqual(repeated.result, { committed: status });
 

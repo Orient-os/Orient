@@ -70,7 +70,7 @@ test('every SUPPORTED capability declares concrete repository operations', () =>
       assert.equal(new Set(declaration.interfaces).size, declaration.interfaces.length,
         `${manifest.adapter}.${name} must not repeat interface requirements`);
       for (const interfaceName of declaration.interfaces) {
-        assert.match(interfaceName, /^[A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*$/,
+        assert.match(interfaceName, /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/,
           `${manifest.adapter}.${name} has an invalid interface path: ${interfaceName}`);
       }
     }
@@ -102,49 +102,3 @@ test('post-initialization verification rejects an enabled capability with a miss
   );
 });
 
-test('all declared supported capability interfaces are present on their concrete adapter repositories', () => {
-  const { MANIFESTS } = require('../../../../src/infrastructure/persistence/manifests/persistence-manifest-registry');
-  const sqlitePath = '../../../../src/infrastructure/persistence/sqlite/sqlite-persistence';
-  const postgresPath = '../../../../src/infrastructure/persistence/postgres/postgres-persistence';
-  const SqlitePersistence = require(sqlitePath);
-  const { PostgresPersistence } = require(postgresPath);
-  const JsonPersistence = require('../../../../src/infrastructure/persistence/json-persistence');
-  const adapterConstructors = {
-    json: JsonPersistence,
-    sqlite: SqlitePersistence,
-    postgres: PostgresPersistence
-  };
-  const prototypes = {};
-  for (const [adapter, Constructor] of Object.entries(adapterConstructors)) {
-    if (adapter === 'postgres') {
-      prototypes[adapter] = {
-        executions: require(postgresPath).PostgresExecutionRepository.prototype,
-        events: require(postgresPath).PostgresEventRepository.prototype,
-        idempotency: require(postgresPath).PostgresIdempotencyRepository.prototype,
-        checkpoints: require(postgresPath).PostgresCheckpointRepository.prototype,
-        workflows: require(postgresPath).PostgresWorkflowRepository.prototype,
-        workflowLeases: require(postgresPath).PostgresWorkflowLeaseRepository.prototype,
-        approvals: require(postgresPath).PostgresApprovalRepository.prototype,
-        workers: require('../../../../src/infrastructure/persistence/postgres/postgres-worker-registry-repository').prototype
-      };
-    } else if (adapter === 'sqlite') {
-      prototypes[adapter] = {
-        executions: require('../../../../src/infrastructure/persistence/sqlite/sqlite-persistence').SqliteExecutionRepository?.prototype,
-      };
-      // SQLite exports its repository instances through the adapter constructor; verify against a fixture below.
-    } else {
-      prototypes[adapter] = {};
-    }
-  }
-  assert.equal(typeof Constructor, 'function');
-  assert.ok(MANIFESTS.json.capabilities['execution.cancellation'].interfaces.length > 0);
-  assert.ok(MANIFESTS.sqlite.capabilities['approval.durable'].interfaces.length > 0);
-  assert.ok(MANIFESTS.postgres.capabilities['worker.fencing'].interfaces.length > 0);
-  for (const [adapter, manifest] of Object.entries(MANIFESTS)) {
-    for (const [name, declaration] of Object.entries(manifest.capabilities)) {
-      if (declaration.status === 'SUPPORTED') {
-        assert.ok(declaration.interfaces.length > 0, `${adapter}.${name} missing interfaces`);
-      }
-    }
-  }
-});

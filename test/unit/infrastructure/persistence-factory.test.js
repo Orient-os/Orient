@@ -104,7 +104,7 @@ test('persistence constructor failures return a structured initialization diagno
       error => error.code === 'PERSISTENCE_INITIALIZATION_FAILED' &&
         error.phase === 'initialization' &&
         error.adapter === 'json' &&
-        error.actual === 'ENOTDIR'
+        error.actual === 'EEXIST'
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

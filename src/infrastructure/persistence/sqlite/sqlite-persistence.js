@@ -1,4 +1,13 @@
 const crypto = require('crypto');
+
+const TERMINAL_EXECUTION_STATUSES = ['completed', 'failed', 'cancelled'];
+
+function terminalConflict(currentStatus, requestedStatus) {
+  const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
+  error.code = 'EXECUTION_TERMINAL_CONFLICT';
+  error.status = 409;
+  return error;
+}
 const { isDeepStrictEqual } = require('node:util');
 const SqliteDatabase = require('./sqlite-database');
 const { SqliteWorkflowRepository, SqliteWorkflowLeaseRepository } = require('./workflow.repository');
@@ -68,9 +77,40 @@ class SqliteExecutionRepository {
   update(executionId, patch, { tenantId = null } = {}) {
     const current = this.findById(executionId, { tenantId });
     if (!current) return null;
+
+    if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
+      if (patch.status && patch.status !== current.status) {
+        throw terminalConflict(current.status, patch.status);
+      }
+      return current;
+    }
+    if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
+
     const updated = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId, updatedAt: new Date().toISOString() });
-    this.db.run('UPDATE executions SET payload = ?, updated_at = ? WHERE execution_id = ?', [JSON.stringify(updated), updated.updatedAt, executionId]);
-    return updated;
+    const tenantClause = tenantId
+      ? (tenantId === 'local'
+          ? " AND (json_extract(payload, '$.metadata.tenantId') = ? OR json_extract(payload, '$.metadata.tenantId') IS NULL)"
+          : " AND json_extract(payload, '$.metadata.tenantId') = ?")
+      : '';
+    const params = [JSON.stringify(updated), updated.updatedAt, executionId];
+    if (tenantId) params.push(tenantId);
+    params.push(...TERMINAL_EXECUTION_STATUSES);
+    const result = this.db.run(
+      'UPDATE executions SET payload = ?, updated_at = ? WHERE execution_id = ?' + tenantClause +
+      " AND COALESCE(json_extract(payload, '$.status'), 'created') NOT IN (?, ?, ?)",
+      params
+    );
+    if (result.changes === 1) return updated;
+
+    // A competing writer may have committed a terminal state after our read.
+    const latest = this.findById(executionId, { tenantId });
+    if (!latest) return null;
+    if (TERMINAL_EXECUTION_STATUSES.includes(latest.status)) {
+      if (patch.status && patch.status !== latest.status) throw terminalConflict(latest.status, patch.status);
+      return latest;
+    }
+    if (latest.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return latest;
+    return null;
   }
 
   deleteById(executionId, { tenantId = null } = {}) {

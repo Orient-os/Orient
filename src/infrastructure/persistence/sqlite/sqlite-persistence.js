@@ -14,7 +14,7 @@ function terminalOutcome(execution) {
 }
 
 function terminalConflict(currentStatus, requestedStatus) {
-  const error = new Error(`Execution is already terminal (${currentStatus}); cannot transition to ${requestedStatus}`);
+  const error = new Error(`Execution is already terminal (${currentStatus}) and rejects conflicting outcome ${requestedStatus}`);
   error.code = 'EXECUTION_TERMINAL_CONFLICT';
   error.status = 409;
   return error;

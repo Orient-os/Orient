@@ -9,7 +9,7 @@ class WorkflowExecutionCoordinator {
     scheduler,
     workflowRepository = null,
     persistence = null,
-    missionEventSink = null,
+    missionEventSink = undefined,
     tenantId = 'local',
     userId = 'local',
     workspaceId = 'local',
@@ -27,9 +27,18 @@ class WorkflowExecutionCoordinator {
     this.userId = userId || 'local';
     this.workspaceId = workspaceId || 'local';
     this.executeRequest = executeRequest;
-    this.missionEventSink = missionEventSink || (this.persistence?.events?.appendMissionEvent
-      ? new DurableMissionEventSink({ eventRepository: this.persistence.events, workflowRepository: this.workflowRepository, tenantId: this.tenantId })
-      : null);
+    // Undefined preserves the legacy automatic sink composition; explicit null
+    // is an authoritative opt-out used when the capability contract disables
+    // durable workflow persistence.
+    this.missionEventSink = missionEventSink === undefined
+      ? (this.persistence?.events?.appendMissionEvent
+          ? new DurableMissionEventSink({
+              eventRepository: this.persistence.events,
+              workflowRepository: this.workflowRepository,
+              tenantId: this.tenantId
+            })
+          : null)
+      : missionEventSink;
   }
 
   createInstance(input, { priority = 0, deadlineAt = null, workflowId = undefined } = {}) {

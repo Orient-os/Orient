@@ -21,7 +21,7 @@ function terminalOutcome(execution) {
         }))
     : [];
 
-  return {
+  const outcome = {
     status: execution.status,
     result: execution.result ?? null,
     completedAt: execution.completedAt ?? null,
@@ -35,6 +35,10 @@ function terminalOutcome(execution) {
         }
       : null
   };
+
+  // Compare the persisted JSON representation, not transient undefined values
+  // or runtime-only object details that disappear at the storage boundary.
+  return JSON.parse(JSON.stringify(outcome));
 }
 
 function terminalConflict(currentStatus, requestedStatus) {

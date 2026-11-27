@@ -1237,3 +1237,66 @@ test('approval challenge summarizes the complete proposed change while bounding 
   assert.equal(summary.changes[2].action, 'invalid');
   assert.match(summary.reviewNotice, /full proposed content/i);
 });
+
+
+test('does not treat a pending operation as already started unless every durable identity field matches', async () => {
+  const ExecutionContext = require('../../../../src/core/execution/execution-context');
+  const mismatches = [
+    { name: 'non-running step', step: { status: 'completed', step: 1, planRevision: 1, tool: 'danger.write' } },
+    { name: 'different step number', step: { status: 'running', step: 2, planRevision: 1, tool: 'danger.write' } },
+    { name: 'different plan revision', step: { status: 'running', step: 1, planRevision: 2, tool: 'danger.write' } },
+    { name: 'different tool identity', step: { status: 'running', step: 1, planRevision: 1, tool: 'other.write' } }
+  ];
+
+  for (const mismatch of mismatches) {
+    const context = new ExecutionContext({
+      requestId: 'request-pending-operation-' + mismatch.name.replaceAll(' ', '-'),
+      input: 'resume guarded write',
+      executionId: 'execution-pending-operation',
+      tenantId: 'tenant-a'
+    });
+    context.start();
+    context.transitionAgentTo(AgentState.LIFECYCLE.PLANNING);
+    context.transitionAgentTo(AgentState.LIFECYCLE.VALIDATING);
+    context.setPlan({
+      intent: 'test.pending-operation-identity',
+      steps: [{ step: 1, tool: 'danger.write', input: {}, dependsOn: null }]
+    });
+    context.metadata.planRevision = 1;
+    context.metadata.pendingStepInputs = { 1: { tool: 'danger.write', operationId: 'operation-1' } };
+    context.steps = [{ ...mismatch.step }];
+    context.transitionAgentTo(AgentState.LIFECYCLE.EXECUTING);
+    const snapshot = context.snapshot();
+
+    let executionAttempts = 0;
+    let leaseReleases = 0;
+    const coordinator = new RequestExecutionCoordinator({
+      agentOrchestrator: {},
+      agentExecutionCoordinator: { run: async () => { executionAttempts += 1; } },
+      recoveryCoordinator: { fail: async () => { throw new Error('approval rejection must not enter recovery'); } },
+      persistence: {
+        executions: { findById: async () => null },
+        checkpoints: {
+          findLatest: async () => ({ checkpointId: 'checkpoint-pending-operation', sequence: 1, snapshot }),
+          acquireResumeLease: async () => ({ leaseId: 'lease-pending-operation' }),
+          renewResumeLease: async () => ({ leaseId: 'lease-pending-operation' }),
+          releaseResumeLease: async () => { leaseReleases += 1; }
+        }
+      },
+      persistenceCoordinator: { checkpoint: async () => {} },
+      approvalService: { findReusable: async () => null },
+      quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+      quotaPolicy: { toJSON: () => ({}) },
+      tenantId: 'tenant-a',
+      maxInputChars: 1000
+    });
+
+    await assert.rejects(
+      coordinator.resume('execution-pending-operation'),
+      error => error.code === 'APPROVAL_NOT_APPROVED',
+      mismatch.name
+    );
+    assert.equal(executionAttempts, 0, mismatch.name + ': mismatched durable step must never enter AgentLoop');
+    assert.equal(leaseReleases, 1, mismatch.name + ': rejected resume must release its lease');
+  }
+});

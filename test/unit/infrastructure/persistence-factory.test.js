@@ -79,14 +79,19 @@ test('SQLite rejects an unsupported optional capability before opening a databas
 });
 
 test('unknown requested capabilities fail closed during preflight', () => {
-  assert.throws(
-    () => createPersistence({
-      persistenceMode: 'json',
-      enabledPersistenceCapabilities: ['invented.capability'],
-      agentDataDirectory: path.join(os.tmpdir(), 'orient-unused-contract-dir')
-    }),
-    error => error.code === 'PERSISTENCE_CAPABILITY_MISSING'
-  );
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-unused-contract-'));
+  try {
+    assert.throws(
+      () => createPersistence({
+        persistenceMode: 'json',
+        enabledPersistenceCapabilities: ['invented.capability'],
+        agentDataDirectory: path.join(temporaryRoot, 'data')
+      }),
+      error => error.code === 'PERSISTENCE_CAPABILITY_MISSING'
+    );
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 

@@ -16,6 +16,7 @@ function terminalConflict(currentStatus, requestedStatus) {
   return error;
 }
 const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
 const { validateAcknowledgement, prepareAcknowledgement } = require('../workflow-outbox-utils');
 const { assertPersistencePrincipal } = require('../../../core/security/persistence-principal');
 const { assertWorkerPersistencePrincipal } = require('../../../core/security/worker-persistence-principal');
@@ -179,6 +180,7 @@ class PostgresExecutionRepository {
       );
       if (!selected.rows.length) return null;
       const current = selected.rows[0].payload;
+      assertExecutionIdentityUnchanged(current, patch);
       if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
         const requested = { ...current, ...patch, id: current.id, executionId: current.executionId };
         if (requested.status === current.status &&
@@ -188,6 +190,7 @@ class PostgresExecutionRepository {
       if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
       const updated = {
         ...current, ...patch,
+        ...preserveExecutionIdentity(current, patch),
         ...(current.cancellationRequested ? { cancellationRequested: true, cancellationReason: current.cancellationReason || patch.cancellationReason || null } : {}),
         id: current.id,
         executionId: current.executionId,

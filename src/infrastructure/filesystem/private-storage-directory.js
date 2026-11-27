@@ -85,12 +85,28 @@ function syncDirectory(directory) {
   }
 }
 
+function isAndroidRuntime() {
+  return process.platform === 'android' ||
+    (process.platform === 'linux' &&
+      process.env.ANDROID_ROOT === '/system' &&
+      fs.existsSync('/system/build.prop'));
+}
+
 function defaultTrustedOwners(serviceUid) {
-  const owners = new Set([0n, serviceUid]);
-  const androidRuntime = process.platform === 'android' ||
-    (process.env.ANDROID_ROOT === '/system' && fs.existsSync('/system/build.prop'));
-  if (androidRuntime) owners.add(1000n); // Android AID_SYSTEM owns platform path ancestors.
-  return owners;
+  // AID_SYSTEM is not a globally trusted storage ancestor owner. It is
+  // accepted only by isTrustedAndroidSystemOwnerAncestor() for exact paths.
+  return new Set([0n, serviceUid]);
+}
+
+function isTrustedAndroidSystemOwnerAncestor(candidate, stats, { platform }) {
+  const androidRuntime = platform === 'android' ||
+    (platform === 'linux' &&
+      process.env.ANDROID_ROOT === '/system' &&
+      fs.existsSync('/system/build.prop'));
+  return androidRuntime &&
+    ANDROID_SYSTEM_GROUP_WRITABLE_ANCESTORS.has(candidate) &&
+    stats.uid === 1000n &&
+    stats.gid === 1000n;
 }
 
 function ensurePrivateStorageDirectory(directory, {
@@ -212,25 +228,30 @@ function ensurePrivateStorageDirectory(directory, {
       return;
     }
 
-    if (!trustedOwners.has(stats.uid)) {
+    const trustedAndroidSystemOwner = isTrustedAndroidSystemOwnerAncestor(
+      candidate,
+      stats,
+      { platform: isAndroidRuntime() ? 'android' : process.platform }
+    );
+    if (!trustedOwners.has(stats.uid) && !trustedAndroidSystemOwner) {
       fail('Private storage ancestor is not owned by a trusted principal', codes.parentUntrusted);
     }
     const ancestorMode = stats.mode & 0o7777n;
     if ((ancestorMode & 0o022n) !== 0n && (ancestorMode & 0o1000n) === 0n) {
       const systemAncestorTrusted = isTrustedAndroidSystemGroupAncestor(candidate, stats, {
-        platform: process.platform,
+        platform: isAndroidRuntime() ? 'android' : process.platform,
         processGid: process.getgid(),
         supplementaryGroups: process.getgroups()
       });
       let appFilesAncestorTrusted = false;
-      if (process.platform === 'android' &&
+      if (isAndroidRuntime() &&
           path.basename(candidate) === 'files' &&
           typeof process.getuid === 'function' &&
           typeof process.getgid === 'function') {
         const parentPath = path.dirname(candidate);
         const parentStats = fs.lstatSync(parentPath, { bigint: true });
         appFilesAncestorTrusted = isTrustedAndroidAppFilesAncestor(candidate, stats, {
-          platform: process.platform,
+          platform: isAndroidRuntime() ? 'android' : process.platform,
           processUid: process.getuid(),
           processGid: process.getgid(),
           parentPath,
@@ -282,4 +303,6 @@ function ensurePrivateStorageDirectory(directory, {
 module.exports = ensurePrivateStorageDirectory;
 
 module.exports.isTrustedAndroidSystemGroupAncestor = isTrustedAndroidSystemGroupAncestor;
+module.exports.isTrustedAndroidSystemOwnerAncestor = isTrustedAndroidSystemOwnerAncestor;
 module.exports.isTrustedAndroidAppFilesAncestor = isTrustedAndroidAppFilesAncestor;
+module.exports.defaultTrustedOwners = defaultTrustedOwners;

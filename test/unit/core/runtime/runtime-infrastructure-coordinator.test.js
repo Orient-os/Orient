@@ -219,3 +219,56 @@ test('disabled durable workflow capability does not attach repositories, recover
   assert.equal(quotaCalls, 0);
   await coordinator.shutdown();
 });
+
+
+test('concrete persistence runtime defers startup side effects until interface verification', async () => {
+  const OrientRuntime = require('../../../../src/core/runtime/orient-runtime');
+  const {
+    resolvePersistenceCapabilities,
+    verifyPersistenceAdapter
+  } = require('../../../../src/core/persistence/contracts/persistence-capability-validator');
+  let quotaInitializations = 0;
+  const persistence = {
+    health: () => ({ adapter: 'postgres' }),
+    isAsync: true,
+    db: {},
+    executions: { findById() {}, insert() {}, update() {} },
+    events: { append() {}, appendMissionEvent() {}, findByAggregateId() {} },
+    idempotency: { begin() {}, complete() {}, fail() {} },
+    workflows: { createWithEvents() {}, save() {}, findById() {}, findAll() {} },
+    workflowLeases: {
+      tryAcquire() {}, save() {}, renewIfOwned() {}, findByWorkflowId() {}, delete() {}
+    },
+    tenantQuotas: {
+      async ensureTenant() { quotaInitializations += 1; }
+    }
+  };
+  const resolved = resolvePersistenceCapabilities({
+    adapter: 'postgres',
+    profile: 'postgres',
+    enabledCapabilities: ['workflow.durable']
+  });
+  const runtime = new OrientRuntime({
+    toolRegistry: { requireAuthorization() {} },
+    agentOrchestrator: { async plan() { return { plan: { steps: [] }, validation: { valid: true, steps: [] } }; } },
+    persistence,
+    persistenceCapabilities: resolved
+  });
+
+  assert.equal(quotaInitializations, 0);
+  assert.equal(runtime.infrastructureCoordinator.started, false);
+  await assert.rejects(
+    runtime.start(),
+    error => error.code === 'PERSISTENCE_CAPABILITY_CONTRACT_UNVERIFIED'
+  );
+  assert.equal(quotaInitializations, 0);
+
+  runtime.persistenceCapabilities = verifyPersistenceAdapter({
+    adapter: 'postgres',
+    persistence,
+    resolved
+  });
+  await runtime.start();
+  assert.equal(quotaInitializations, 1);
+  await runtime.shutdown({ cancelQueued: false });
+});

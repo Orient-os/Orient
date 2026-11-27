@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const parseTapTests = require('../../scripts/lib/parse-tap-tests');
+const parseTapTests = require('../../../scripts/lib/parse-tap-tests');
 
 test('TAP parser distinguishes passed, skipped, TODO, and failed evidence cases', () => {
   const parsed = parseTapTests([

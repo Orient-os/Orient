@@ -49,7 +49,7 @@ function validateManifestShape(manifest, profile) {
     }
     const validInterface = value =>
       typeof value === 'string' &&
-      /^[A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*$/.test(value);
+      /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(value);
     if (new Set(entry.interfaces).size !== entry.interfaces.length ||
         entry.interfaces.some(value => !validInterface(value)) ||
         (entry.status === CAPABILITY_STATUS.SUPPORTED && entry.interfaces.length === 0)) {

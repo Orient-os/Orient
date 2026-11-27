@@ -1,3 +1,4 @@
+const crypto = require('node:crypto');
 function persistedDecisionForReplay(record) {
   return { ...record.decision };
 }
@@ -702,4 +703,38 @@ test('durable approval decision race remains single-winner under 32 concurrent c
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('approval review summary rejects truncated malformed SHA-256 values instead of displaying valid prefixes', async () => {
+  const service = new ApprovalService({ clock: () => 1000 });
+  const proposedContent = 'content to review';
+  const proposedDigest = crypto.createHash('sha256').update(proposedContent, 'utf8').digest('hex');
+
+  await service.issue({
+    executionId: 'exec-malformed-review-digest',
+    step: 1,
+    tool: 'project.execute_change',
+    capability: 'workspace.write',
+    tenantId: 'tenant-malformed-review',
+    metadata: {
+      approvalSummary: {
+        kind: 'file_change',
+        changeCount: 1,
+        changes: [{
+          action: 'update',
+          path: 'src/example.js',
+          expectedContentSha256: 'a'.repeat(64) + 'trailing-data',
+          proposedContentSha256: proposedDigest + 'trailing-data',
+          proposedContent,
+          contentTruncated: false
+        }]
+      }
+    }
+  });
+
+  const [pending] = await service.listPending({ tenantId: 'tenant-malformed-review' });
+  assert.equal(pending.summary.changes[0].expectedContentSha256, null);
+  assert.equal(pending.summary.changes[0].proposedContentSha256, null);
+  assert.equal(pending.summary.changes[0].contentHashValid, false);
 });

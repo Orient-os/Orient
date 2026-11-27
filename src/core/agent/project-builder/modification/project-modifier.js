@@ -50,15 +50,27 @@ class ProjectModifier {
       );
     }
 
-    if (action === 'update' && typeof change.expectedContentSha256 === 'string') {
+    if (action === 'update') {
+      const expectedContentSha256 = change.expectedContentSha256;
+      if (typeof expectedContentSha256 !== 'string') {
+        const error = new Error(`Update change requires a before-image SHA-256 digest: ${path}`);
+        error.code = 'CHANGE_PRECONDITION_REQUIRED';
+        throw error;
+      }
+      if (!/^[a-f0-9]{64}$/i.test(expectedContentSha256)) {
+        const error = new Error(`Update change has an invalid before-image SHA-256 digest: ${path}`);
+        error.code = 'CHANGE_PRECONDITION_INVALID';
+        throw error;
+      }
+
       const current = await this.workspace.readText(path);
       const actualHash = crypto.createHash('sha256').update(current).digest('hex');
-      if (actualHash !== change.expectedContentSha256) {
+      if (actualHash !== expectedContentSha256.toLowerCase()) {
         const error = new Error(
           `Change precondition failed: ${path} was modified after the proposal was created`
         );
         error.code = 'CHANGE_PRECONDITION_FAILED';
-        error.expectedContentSha256 = change.expectedContentSha256;
+        error.expectedContentSha256 = expectedContentSha256.toLowerCase();
         error.actualContentSha256 = actualHash;
         throw error;
       }
@@ -73,7 +85,8 @@ class ProjectModifier {
     return {
       action,
       path,
-      content
+      content,
+      ...(action === 'update' ? { expectedContentSha256: change.expectedContentSha256.toLowerCase() } : {})
     };
   }
 

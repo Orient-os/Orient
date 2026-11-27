@@ -23,9 +23,14 @@ class RuntimeInfrastructureCoordinator {
     maxInputChars = 100000,
     maxToolInputChars = 50000,
     quotaPolicy = null,
-    quotaService = null
+    quotaService = null,
+    deferStartup = false
   } = {}) {
     this.persistence = persistence;
+    this.deferStartup = deferStartup === true;
+    this.started = false;
+    this.startPromise = null;
+    this.ownsWorkflowScheduler = !workflowScheduler;
     this.tenantId = tenantId || 'local';
 
     this.workflowRepository = persistence?.workflows || null;
@@ -112,14 +117,40 @@ class RuntimeInfrastructureCoordinator {
       this.tenantQuotaService.scheduler = this.workflowScheduler;
     }
 
-    this.quotaReady = this.tenantQuotaRepository?.ensureTenant
-      ? this.tenantQuotaRepository.ensureTenant(this.tenantId, this.tenantQuotaPolicy)
-      : Promise.resolve();
+    this.quotaReady = this.deferStartup
+      ? Promise.resolve()
+      : this.tenantQuotaRepository?.ensureTenant
+        ? this.tenantQuotaRepository.ensureTenant(this.tenantId, this.tenantQuotaPolicy)
+        : Promise.resolve();
 
-    this.recoveryReady =
-      !workflowScheduler && !persistence?.isAsync && this.workflowRepository?.findAll
+    this.recoveryReady = this.deferStartup
+      ? Promise.resolve(0)
+      : !workflowScheduler && !persistence?.isAsync && this.workflowRepository?.findAll
         ? Promise.resolve(this.workflowScheduler.recoverPersisted())
         : Promise.resolve(0);
+
+    if (!this.deferStartup) this.started = true;
+  }
+
+  start() {
+    if (this.started) return Promise.resolve(this.recoveryReady).then(recovered => ({ started: true, recovered }));
+    if (this.startPromise) return this.startPromise;
+
+    this.startPromise = (async () => {
+      this.quotaReady = this.tenantQuotaRepository?.ensureTenant
+        ? Promise.resolve().then(() => this.tenantQuotaRepository.ensureTenant(this.tenantId, this.tenantQuotaPolicy))
+        : Promise.resolve();
+      await this.quotaReady;
+
+      this.recoveryReady =
+        this.ownsWorkflowScheduler && !this.workflowScheduler?.async && this.workflowRepository?.findAll
+          ? Promise.resolve().then(() => this.workflowScheduler.recoverPersisted())
+          : Promise.resolve(0);
+      const recovered = await this.recoveryReady;
+      this.started = true;
+      return { started: true, recovered };
+    })();
+    return this.startPromise;
   }
 
   shutdown(options = {}) {

@@ -122,3 +122,35 @@ test('runtime composes durable mission recovery into the async workflow schedule
   assert.equal(coordinator.workflowScheduler.missionEventSink, coordinator.missionEventSink);
   coordinator.shutdown();
 });
+
+
+test('deferred runtime infrastructure performs quota initialization only after explicit start', async () => {
+  let initialized = 0;
+  const persistence = {
+    isAsync: true,
+    db: {},
+    workflows: {
+      async findAll() { return []; },
+      async claimQueued() { return []; }
+    },
+    workflowLeases: {},
+    tenantQuotas: {
+      async ensureTenant() { initialized += 1; }
+    }
+  };
+
+  const coordinator = new RuntimeInfrastructureCoordinator({
+    persistence,
+    tenantId: 'tenant-deferred',
+    deferStartup: true
+  });
+
+  assert.equal(initialized, 0);
+  assert.equal(coordinator.started, false);
+  await coordinator.start();
+  assert.equal(initialized, 1);
+  assert.equal(coordinator.started, true);
+  await coordinator.start();
+  assert.equal(initialized, 1);
+  await coordinator.shutdown();
+});

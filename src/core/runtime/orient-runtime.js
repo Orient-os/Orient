@@ -46,7 +46,8 @@ class OrientRuntime {
     agentInvocationService = null,
     capabilityGovernance = null,
     approvalDecisionAuthorizer = null,
-    ownerSessionAuthorizer = null
+    ownerSessionAuthorizer = null,
+    deferPersistenceStartup = false
   }) {
     if (!toolRegistry) {
       throw new TypeError(
@@ -111,6 +112,7 @@ class OrientRuntime {
 
     this.persistence =
       persistence;
+    this.ready = deferPersistenceStartup !== true;
 
     this.tenantId = tenantId || 'local';
     this.userId = userId || 'local';
@@ -150,7 +152,8 @@ class OrientRuntime {
       maxInputChars,
       maxToolInputChars,
       quotaPolicy,
-      quotaService
+      quotaService,
+      deferStartup: deferPersistenceStartup
     });
 
     this.workflowRepository = this.infrastructureCoordinator.workflowRepository;
@@ -229,6 +232,12 @@ class OrientRuntime {
 
     this.version =
       version;
+  }
+
+  async start() {
+    const result = await this.infrastructureCoordinator.start();
+    this.ready = true;
+    return result;
   }
 
   persistEvents(context, persistencePrincipal = null) {

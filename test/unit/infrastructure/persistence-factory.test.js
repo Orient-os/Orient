@@ -38,3 +38,52 @@ test('persistence factory does not silently downgrade PostgreSQL mode', () => {
     error => !error.message.includes('json')
   );
 });
+
+
+test('JSON persistence passes the trusted preflight and initialized adapter contract', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-persistence-contract-'));
+  try {
+    const runtime = createPersistence({
+      persistenceMode: 'json',
+      persistenceProfile: 'local',
+      agentDataDirectory: directory
+    });
+    assert.equal(runtime.resolvedCapabilities.contractVersion, '1.0.0');
+    assert.equal(runtime.verify().verified, true);
+    runtime.close();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('SQLite capability preflight fails before opening a database or applying migrations', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-sqlite-preflight-'));
+  const filePath = path.join(directory, 'must-not-exist.db');
+  try {
+    assert.throws(
+      () => createPersistence({
+        persistenceMode: 'sqlite',
+        persistenceProfile: 'local',
+        databaseFile: filePath,
+        agentDataDirectory: directory
+      }),
+      error => error.code === 'PERSISTENCE_GUARANTEE_UNSATISFIED' &&
+        error.guarantee === 'idempotency.terminal.protection' &&
+        error.phase === 'preflight'
+    );
+    assert.equal(fs.existsSync(filePath), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('unknown requested capabilities fail closed during preflight', () => {
+  assert.throws(
+    () => createPersistence({
+      persistenceMode: 'json',
+      enabledPersistenceCapabilities: ['invented.capability'],
+      agentDataDirectory: path.join(os.tmpdir(), 'orient-unused-contract-dir')
+    }),
+    error => error.code === 'PERSISTENCE_CAPABILITY_MISSING'
+  );
+});

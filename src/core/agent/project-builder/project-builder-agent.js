@@ -266,13 +266,13 @@ class ProjectBuilderAgent {
     if (beforeExecution !== null && typeof beforeExecution !== 'function') {
       throw new TypeError('beforeExecution must be a function when provided');
     }
-    if (beforeExecution) await beforeExecution({ plan, changeSet });
 
     return this.executionService.execute({
       plan,
       changeSet,
       definitionOfDone,
-      checks
+      checks,
+      beforeMutation: beforeExecution
     });
   }
 

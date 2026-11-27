@@ -63,7 +63,10 @@ class ChangeSet {
     return {
       action,
       path,
-      content
+      content,
+      ...(action === 'update' && Object.prototype.hasOwnProperty.call(change, 'expectedContentSha256')
+        ? { expectedContentSha256: change.expectedContentSha256 }
+        : {})
     };
   }
 

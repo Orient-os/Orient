@@ -76,7 +76,7 @@ function nextLine(child) {
     child.stdout.setEncoding('utf8');
     const onData = chunk => {
       buffer += chunk;
-      const index = buffer.indexOf('\\n');
+      const index = buffer.indexOf('\n');
       if (index >= 0) {
         child.stdout.off('data', onData);
         resolve(buffer.slice(0, index));
@@ -85,7 +85,7 @@ function nextLine(child) {
     child.stdout.on('data', onData);
     child.once('error', reject);
     child.once('exit', code => {
-      if (!buffer.includes('\\n')) reject(new Error('worker exited without a result; code=' + code));
+      if (!buffer.includes('\n')) reject(new Error('worker exited without a result; code=' + code));
     });
   });
 }

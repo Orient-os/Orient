@@ -202,6 +202,30 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         policy: { ...policy, allowRead: true, allowWrite: false, allowCommands: false, allowGit: false }
       });
 
+      if (receipt?.outcome === 'rolled_back') {
+        const restoredObservations = [];
+        let restoredStateMatches = true;
+        for (const expected of receipt.result.rollback.restored) {
+          const exists = await workspaceAgent.workspace.exists(expected.path);
+          let restored = !expected.existed && !exists;
+          if (expected.existed && exists) {
+            const content = await workspaceAgent.workspace.readText(expected.path);
+            const actualHash = crypto.createHash('sha256').update(content).digest('hex');
+            restored = actualHash === expected.contentSha256;
+          }
+          restoredObservations.push({ path: expected.path, restored });
+          if (!restored) restoredStateMatches = false;
+        }
+        if (restoredStateMatches) {
+          return { status: 'completed', result: receipt.result };
+        }
+        return {
+          status: 'conflict',
+          reason: 'rolled_back_workspace_state_conflict',
+          observations: restoredObservations
+        };
+      }
+
       const observations = [];
       let allApplied = true;
 

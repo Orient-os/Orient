@@ -100,7 +100,7 @@ const testCount = results.reduce((sum, file) => sum + file.expected.length, 0);
 const passedCount = results.reduce((sum, file) =>
   sum + file.expected.filter(item => item.status === 'passed').length, 0);
 const failedCount = testCount - passedCount;
-let commit = process.env.GITHUB_SHA || null;
+let commit = process.env.ORIENT_EVIDENCE_SOURCE_SHA || process.env.GITHUB_SHA || null;
 if (!commit) {
   const git = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (git.status === 0) commit = git.stdout.trim();

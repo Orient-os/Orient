@@ -239,7 +239,7 @@ class ProjectModifier {
     };
   }
 
-  async apply(changeSet) {
+  async apply(changeSet, { beforeMutation = null } = {}) {
     if (
       !changeSet ||
       !Array.isArray(changeSet.changes)
@@ -267,6 +267,11 @@ class ProjectModifier {
     for (const change of validatedChanges) {
       snapshots.push(await this.snapshot(change));
     }
+
+    if (beforeMutation !== null && typeof beforeMutation !== 'function') {
+      throw new TypeError('beforeMutation must be a function when provided');
+    }
+    if (beforeMutation) await beforeMutation({ snapshots });
 
     const results = [];
     const attemptedChanges = [];

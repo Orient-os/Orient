@@ -7,10 +7,34 @@ const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require(
 const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function terminalOutcome(execution) {
-  // Compare the complete durable execution snapshot, excluding only storage metadata.
-  // This includes failure details, steps, observations, agent state, and terminal events.
-  const { updatedAt, ...outcome } = execution;
-  return outcome;
+  const terminalEvents = (Array.isArray(execution.events) ? execution.events : [])
+    .filter(event => ['execution.completed', 'execution.failed', 'execution.cancelled'].includes(event?.type))
+    .map(event => ({ type: event.type, data: event.data || {} }));
+  const failedSteps = execution.status === 'failed'
+    ? (Array.isArray(execution.steps) ? execution.steps : [])
+        .filter(step => step?.status === 'failed')
+        .map(step => ({
+          step: step.step,
+          planRevision: step.planRevision || 1,
+          tool: step.tool || null,
+          error: step.error || null
+        }))
+    : [];
+
+  return {
+    status: execution.status,
+    result: execution.result ?? null,
+    completedAt: execution.completedAt ?? null,
+    cancellationRequested: Boolean(execution.cancellationRequested),
+    cancellationReason: execution.cancellationReason ?? null,
+    terminalEvents,
+    failureDetails: execution.status === 'failed'
+      ? {
+          errors: execution.agentState?.errors || [],
+          failedSteps
+        }
+      : null
+  };
 }
 
 function terminalConflict(currentStatus, requestedStatus) {

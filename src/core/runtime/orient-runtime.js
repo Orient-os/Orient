@@ -333,10 +333,11 @@ class OrientRuntime {
       } catch (error) {
         this.ready = false;
         if (this.lifecycleState !== 'STOPPING') {
-          const terminal = phase === 'validation' ||
+          const terminal = phase === 'infrastructure' && (
             this.infrastructureCoordinator.startFailure != null ||
             error?.code === 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE' ||
-            error?.retryable === false;
+            error?.retryable === false
+          );
           this.lifecycleState = terminal ? 'FAILED_TERMINAL' : 'FAILED_RETRYABLE';
           if (terminal) this.startFailure = error;
         }

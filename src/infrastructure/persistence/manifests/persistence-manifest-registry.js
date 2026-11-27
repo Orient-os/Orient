@@ -95,7 +95,7 @@ const MANIFESTS = Object.freeze({
         'workflowLeases.delete'
       ]),
       'workflow.ephemeral': capability(UNSUPPORTED),
-      'execution.cancellation': capability(SUPPORTED)
+      'execution.cancellation': capability(SUPPORTED, [], ['executions.requestCancellation'])
     })
   })
 });

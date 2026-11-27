@@ -32,14 +32,20 @@ function publicApprovalSummary(value) {
       changeCount: Number.isInteger(value.changeCount) ? Math.max(0, Math.min(value.changeCount, 1000)) : value.changes.length,
       changes: value.changes.slice(0, 10).map(change => {
         const proposedContent = typeof change?.proposedContent === 'string' ? change.proposedContent.slice(0, 32000) : '';
-        const proposedContentSha256 = typeof change?.proposedContentSha256 === 'string' ? change.proposedContentSha256.slice(0, 64) : null;
+        const proposedContentSha256 = typeof change?.proposedContentSha256 === 'string' &&
+          /^[a-f0-9]{64}$/i.test(change.proposedContentSha256)
+          ? change.proposedContentSha256.toLowerCase()
+          : null;
         const contentTruncated = Boolean(change?.contentTruncated);
         const contentHashValid = !contentTruncated && Boolean(proposedContentSha256) &&
           crypto.createHash('sha256').update(proposedContent, 'utf8').digest('hex') === proposedContentSha256;
         return {
           action: ['create', 'update'].includes(change?.action) ? change.action : 'invalid',
           path: typeof change?.path === 'string' ? change.path.slice(0, 512) : '',
-          expectedContentSha256: typeof change?.expectedContentSha256 === 'string' ? change.expectedContentSha256.slice(0, 64) : null,
+          expectedContentSha256: typeof change?.expectedContentSha256 === 'string' &&
+            /^[a-f0-9]{64}$/i.test(change.expectedContentSha256)
+            ? change.expectedContentSha256.toLowerCase()
+            : null,
           proposedContentSha256,
           contentHashValid,
           contentBytes: Number.isFinite(change?.contentBytes) ? Math.max(0, Math.min(change.contentBytes, 10_000_000)) : 0,

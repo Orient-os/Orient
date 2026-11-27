@@ -87,3 +87,41 @@ test('JSON terminal integrity includes durable failure details, not only status'
     error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
   );
 });
+
+
+test('JSON execution identity cannot be rebound by updates', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-json-identity-'));
+  const filePath = path.join(directory, 'executions.json');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const repository = new ExecutionRepository(filePath);
+  repository.insert({
+    id: 'stable-id',
+    executionId: 'stable-execution',
+    requestId: 'stable-request',
+    goalId: 'stable-goal',
+    parentExecutionId: 'stable-parent',
+    executionVersion: 4,
+    status: 'running',
+    metadata: { tenantId: 'tenant-a', userId: 'owner-a', workspaceId: 'workspace-a' }
+  }, { tenantId: 'tenant-a' });
+
+  assert.throws(
+    () => repository.update('stable-execution', { requestId: 'replacement-request' }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'requestId'
+  );
+  assert.throws(
+    () => repository.update('stable-execution', {
+      metadata: { tenantId: 'tenant-b', userId: 'owner-a', workspaceId: 'workspace-a' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_IDENTITY_CONFLICT' && error.field === 'metadata.tenantId'
+  );
+
+  const updated = repository.update('stable-execution', {
+    metadata: { label: 'safe mutable metadata' }
+  }, { tenantId: 'tenant-a' });
+  assert.equal(updated.requestId, 'stable-request');
+  assert.equal(updated.goalId, 'stable-goal');
+  assert.equal(updated.executionVersion, 4);
+  assert.equal(updated.metadata.tenantId, 'tenant-a');
+  assert.equal(updated.metadata.label, 'safe mutable metadata');
+});

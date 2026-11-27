@@ -181,7 +181,18 @@ function verifyPersistenceAdapter({ adapter, persistence, resolved, phase = 'pos
     }
   }
 
-  return Object.freeze({ ...resolved, verified: true });
+  return Object.freeze({
+    ...resolved,
+    interfacesVerified: true,
+    guaranteesVerified: false,
+    guaranteeVerification: Object.freeze(Object.fromEntries(
+      (resolved?.guarantees || []).map(guarantee => [guarantee, Object.freeze({
+        status: 'unverified',
+        evidence: Object.freeze([]),
+        reason: 'behavioral-conformance-evidence-not-attached'
+      })])
+    ))
+  });
 }
 
 function getCoreGuarantees() {

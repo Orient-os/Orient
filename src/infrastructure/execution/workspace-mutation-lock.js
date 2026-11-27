@@ -46,12 +46,12 @@ function readBootId() {
 
 function assertLocalFilesystem(directory) {
   const mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
-  const decodeMountPath = value => value.replace(/\\\\([0-7]{3})/g, (_, octal) =>
+  const decodeMountPath = value => value.replace(/\\([0-7]{3})/g, (_, octal) =>
     String.fromCharCode(parseInt(octal, 8))
   );
   const target = path.resolve(directory);
   let selected = null;
-  for (const line of mountInfo.split('\\n')) {
+  for (const line of mountInfo.split('\n')) {
     const separator = line.indexOf(' - ');
     if (separator < 0) continue;
     const left = line.slice(0, separator).split(' ');

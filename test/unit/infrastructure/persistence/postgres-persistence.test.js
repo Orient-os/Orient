@@ -608,3 +608,52 @@ test('Postgres principal-scoped reads derive a non-local tenant and reject an ex
   );
   assert.equal(db.calls.length, 1, 'a mismatched explicit tenant must fail before issuing SQL');
 });
+
+
+test('Postgres execution terminal transition is compare-and-set protected against a competing writer', async () => {
+  const committed = {
+    executionId: 'exec-terminal',
+    tenantId: 'tenant-a',
+    status: 'completed',
+    metadata: { tenantId: 'tenant-a' },
+    result: { winner: 'completed' }
+  };
+  const db = fakeDb([
+    { rows: [{ payload: { ...committed, status: 'running', result: null } }], rowCount: 1 },
+    { rows: [], rowCount: 0 },
+    { rows: [{ payload: committed }], rowCount: 1 }
+  ]);
+  const repo = new PostgresExecutionRepository(db);
+
+  await assert.rejects(
+    () => repo.update('exec-terminal', {
+      status: 'failed',
+      result: { winner: 'failed' }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT' && error.status === 409
+  );
+
+  assert.equal(db.calls.length, 3);
+  assert.match(db.calls[1].text, /COALESCE\\(payload->>'status', 'created'\\) NOT IN \\('completed', 'failed', 'cancelled'\\)/);
+  assert.deepEqual(db.calls[1].values.slice(0, 2), ['exec-terminal', 'tenant-a']);
+});
+
+test('Postgres execution terminal retry returns the durable winner without rewriting it', async () => {
+  const committed = {
+    executionId: 'exec-terminal-retry',
+    tenantId: 'tenant-a',
+    status: 'completed',
+    metadata: { tenantId: 'tenant-a' },
+    result: { winner: 'completed' }
+  };
+  const db = fakeDb([{ rows: [{ payload: committed }], rowCount: 1 }]);
+  const repo = new PostgresExecutionRepository(db);
+
+  const result = await repo.update('exec-terminal-retry', {
+    status: 'completed',
+    result: { winner: 'stale-retry' }
+  }, { tenantId: 'tenant-a' });
+
+  assert.deepEqual(result.result, { winner: 'completed' });
+  assert.equal(db.calls.length, 1);
+});

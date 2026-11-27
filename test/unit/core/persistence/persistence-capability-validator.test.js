@@ -99,3 +99,31 @@ test('post-initialization verification rejects an enabled capability with a miss
   );
 });
 
+
+
+test('post-initialization interface checks do not claim behavioral guarantees are proven', () => {
+  const {
+    resolvePersistenceCapabilities: resolve,
+    verifyPersistenceAdapter
+  } = require('../../../../src/core/persistence/contracts/persistence-capability-validator');
+  const resolved = resolve({ adapter: 'json', profile: 'local' });
+  const persistence = {
+    executions: { findById() {}, insert() {}, update() {} },
+    events: { append() {} },
+    idempotency: { begin() {}, complete() {}, fail() {} }
+  };
+
+  const verification = verifyPersistenceAdapter({
+    adapter: 'json',
+    persistence,
+    resolved
+  });
+
+  assert.equal(verification.interfacesVerified, true);
+  assert.equal(verification.guaranteesVerified, false);
+  assert.equal(verification.verified, undefined);
+  for (const guarantee of resolved.guarantees) {
+    assert.equal(verification.guaranteeVerification[guarantee].status, 'unverified');
+    assert.deepEqual(verification.guaranteeVerification[guarantee].evidence, []);
+  }
+});

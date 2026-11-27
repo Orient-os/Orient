@@ -34,6 +34,22 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
             }
           };
         };
+      } else if (mode === 'rolledback') {
+        ProjectBuilderAgent.prototype.execute = async function (options) {
+          await options.beforeExecution();
+          const result = {
+            status: 'failed',
+            rollback: {
+              rolledBack: true,
+              restored: [{
+                path: proposal.path,
+                existed: true,
+                contentSha256: proposal.expectedContentSha256
+              }]
+            }
+          };
+          return { ...result, toJSON: () => result };
+        };
       }
       const store = new ReceiptStore({ directory: receiptDirectory });
       const tool = createProjectTools({
@@ -42,8 +58,15 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
         operationReceiptStore: store
       }).find(item => item.name === 'project.execute_change');
       try {
-        const result = await tool.execute({ proposals: [proposal] }, { operationId, tenantId: 'tenant-lock-test' });
-        process.stdout.write(JSON.stringify({ result: result.toJSON ? result.toJSON() : result }) + '\\n');
+        const context = { operationId, tenantId: 'tenant-lock-test' };
+        const result = await tool.execute({ proposals: [proposal] }, context);
+        const reconciliation = mode === 'rolledback'
+          ? await tool.reconcile({ proposals: [proposal] }, context)
+          : null;
+        process.stdout.write(JSON.stringify({
+          result: result.toJSON ? result.toJSON() : result,
+          reconciliation
+        }) + '\\n');
       } catch (error) {
         process.stdout.write(JSON.stringify({ error: error.code || null, message: error.message }) + '\\n');
         process.exitCode = 2;
@@ -89,6 +112,28 @@ function nextLine(child) {
     });
   });
 }
+
+test('canonical project tool receipts and reconciles a safely rolled-back operation before unlocking', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-rollback-receipt-'));
+  const root = path.join(base, 'workspace');
+  const receiptDirectory = path.join(base, 'agent-data', 'project-operation-receipts');
+  await fs.mkdir(root);
+  await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(root, 'target.txt'), 'before');
+  let worker;
+  try {
+    worker = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-rolledback', mode: 'rolledback' });
+    const outcome = JSON.parse(await nextLine(worker));
+    assert.equal(outcome.result.status, 'failed');
+    assert.equal(outcome.result.rollback.rolledBack, true);
+    assert.equal(outcome.reconciliation.status, 'completed');
+    assert.equal(outcome.reconciliation.result.status, 'failed');
+    await waitForExit(worker);
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
 
 test('canonical project tool holds the workspace lock through receipt commit and revalidates after release', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-transaction-'));

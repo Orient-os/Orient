@@ -44,6 +44,32 @@ function readBootId() {
   return value;
 }
 
+function assertLocalFilesystem(directory) {
+  const mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+  const decodeMountPath = value => value.replace(/\\\\([0-7]{3})/g, (_, octal) =>
+    String.fromCharCode(parseInt(octal, 8))
+  );
+  const target = path.resolve(directory);
+  let selected = null;
+  for (const line of mountInfo.split('\\n')) {
+    const separator = line.indexOf(' - ');
+    if (separator < 0) continue;
+    const left = line.slice(0, separator).split(' ');
+    const right = line.slice(separator + 3).split(' ');
+    const mountPoint = decodeMountPath(left[4] || '');
+    const fileSystem = right[0] || '';
+    if ((target === mountPoint || target.startsWith(mountPoint.endsWith('/') ? mountPoint : mountPoint + path.sep)) &&
+        (!selected || mountPoint.length > selected.mountPoint.length)) {
+      selected = { mountPoint, fileSystem };
+    }
+  }
+  const localFilesystems = new Set(['ext4', 'f2fs', 'xfs', 'btrfs', 'tmpfs', 'overlay']);
+  if (!selected || !localFilesystems.has(selected.fileSystem)) {
+    fail('Workspace lock storage must use a supported local filesystem; network or unknown filesystems are denied',
+      'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_FILESYSTEM');
+  }
+}
+
 function readOwner(lockPath) {
   const ownerPath = path.join(lockPath, 'owner.json');
   let descriptor;
@@ -112,6 +138,7 @@ class WorkspaceMutationLock {
         parentUntrusted: 'PROJECT_WORKSPACE_LOCK_PARENT_UNTRUSTED'
       }
     });
+    assertLocalFilesystem(this.lockDirectory);
     this.workspaceId = crypto.createHash('sha256').update(this.workspaceRoot, 'utf8').digest('hex');
     this.lockPath = path.join(this.lockDirectory, this.workspaceId + '.lock');
   }

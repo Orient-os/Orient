@@ -78,33 +78,35 @@ class EventRepository {
     this.filePath = path.join(this.directory, path.basename(this.filePath));
     this.lockPath = this.filePath + '.lock';
 
-    try {
-      const descriptor = fs.openSync(this.filePath, 'wx', PRIVATE_FILE_MODE);
+    this.withLock(() => {
       try {
-        fs.writeFileSync(descriptor, '[]\n', 'utf8');
-        fs.fsyncSync(descriptor);
+        const descriptor = fs.openSync(this.filePath, 'wx', PRIVATE_FILE_MODE);
+        try {
+          fs.writeFileSync(descriptor, '[]\n', 'utf8');
+          fs.fsyncSync(descriptor);
+        } finally {
+          fs.closeSync(descriptor);
+        }
+        syncDirectory(this.directory);
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+  
+      let descriptor;
+      try {
+        descriptor = fs.openSync(this.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        validatePrivateEventFile(fs.fstatSync(descriptor, { bigint: true }));
+      } catch (error) {
+        if (error.code === 'ELOOP') {
+          fail('Event storage must not be a symbolic link', 'EVENT_STORAGE_CORRUPT');
+        }
+        throw error;
       } finally {
-        fs.closeSync(descriptor);
+        if (descriptor !== undefined) {
+          try { fs.closeSync(descriptor); } catch {}
+        }
       }
-      syncDirectory(this.directory);
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-
-    let descriptor;
-    try {
-      descriptor = fs.openSync(this.filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-      validatePrivateEventFile(fs.fstatSync(descriptor, { bigint: true }));
-    } catch (error) {
-      if (error.code === 'ELOOP') {
-        fail('Event storage must not be a symbolic link', 'EVENT_STORAGE_CORRUPT');
-      }
-      throw error;
-    } finally {
-      if (descriptor !== undefined) {
-        try { fs.closeSync(descriptor); } catch {}
-      }
-    }
+    });
   }
 
   read() {

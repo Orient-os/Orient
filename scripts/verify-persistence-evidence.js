@@ -12,21 +12,15 @@ const adapters = ['json', 'sqlite', 'postgres'];
 const failures = [];
 const fileResults = new Map();
 
-function collectTests(value, output = []) {
-  if (!value || typeof value !== 'object') return output;
-  if (!Array.isArray(value) && typeof value.name === 'string' &&
-      (value.type === 'test' || Object.prototype.hasOwnProperty.call(value, 'ok') ||
-       Object.prototype.hasOwnProperty.call(value, 'status'))) {
-    output.push(value);
+function parseTapTests(output) {
+  const tests = [];
+  for (const line of String(output || '').split(/\r?\n/)) {
+    const match = line.match(/^\s*(ok|not ok)\s+\d+\s+-\s+(.+?)\s*$/);
+    if (!match) continue;
+    const name = match[2].replace(/\s+#\s+(?:SKIP|TODO)\b.*$/i, '').trim();
+    tests.push({ name, status: match[1] === 'ok' ? 'passed' : 'failed' });
   }
-  for (const child of Object.values(value)) {
-    if (child && typeof child === 'object') collectTests(child, output);
-  }
-  return output;
-}
-
-function isPassed(test) {
-  return test.ok === true || test.status === 'passed' || test.status === 'success';
+  return tests;
 }
 
 function sha256(filePath) {
@@ -58,21 +52,15 @@ for (const adapter of adapters) {
 }
 
 for (const [file, record] of fileResults) {
-  const run = spawnSync(process.execPath, ['--test', '--test-reporter=json', file], {
+  // TAP is a built-in Node test reporter across the supported Node 22/24 CI matrix.
+  const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', file], {
     cwd: root,
     env: process.env,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     timeout: 10 * 60 * 1000
   });
-  let report = null;
-  let parseError = null;
-  try {
-    report = JSON.parse(run.stdout || '');
-  } catch (error) {
-    parseError = error.message;
-  }
-  const tests = report ? collectTests(report) : [];
+  const tests = parseTapTests(run.stdout);
   const fileRecord = {
     file,
     sha256: sha256(record.absolutePath),
@@ -80,30 +68,38 @@ for (const [file, record] of fileResults) {
     signal: run.signal || null,
     expected: [],
     stderr: (run.stderr || '').slice(-4000),
-    parseError
+    reporter: 'tap'
   };
 
   for (const expected of record.expected) {
     const matches = tests.filter(test => test.name === expected.testName);
-    const passed = matches.length === 1 && isPassed(matches[0]) && run.status === 0;
+    const passed = matches.length === 1 && matches[0].status === 'passed' && run.status === 0;
     const result = {
       ...expected,
       status: passed ? 'passed' : 'failed',
       observedMatches: matches.length
     };
     fileRecord.expected.push(result);
-    if (!passed) failures.push({ ...result, file, reason: matches.length !== 1
-      ? 'expected exactly one matching test in JSON reporter output'
-      : 'test did not pass or its file process failed' });
+    if (!passed) failures.push({
+      ...result,
+      file,
+      reason: matches.length !== 1
+        ? 'expected exactly one matching test in TAP reporter output'
+        : 'test did not pass or its file process failed'
+    });
   }
   if (run.error) failures.push({ file, reason: run.error.message });
-  if (run.status !== 0 && !run.error) failures.push({ file, reason: 'test file process exited unsuccessfully', exitCode: run.status });
+  if (run.status !== 0 && !run.error) {
+    failures.push({ file, reason: 'test file process exited unsuccessfully', exitCode: run.status });
+  }
   fileResults.set(file, { ...record, result: fileRecord });
 }
 
 const results = [...fileResults.values()].map(item => item.result);
 const testCount = results.reduce((sum, file) => sum + file.expected.length, 0);
-const passedCount = results.reduce((sum, file) => sum + file.expected.filter(item => item.status === 'passed').length, 0);
+const passedCount = results.reduce((sum, file) =>
+  sum + file.expected.filter(item => item.status === 'passed').length, 0);
+const failedCount = testCount - passedCount;
 let commit = process.env.GITHUB_SHA || null;
 if (!commit) {
   const git = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
@@ -127,7 +123,8 @@ const attestation = {
     guaranteesPerAdapter: CORE_GUARANTEES.length,
     evidenceCases: testCount,
     passed: passedCount,
-    failed: failures.length
+    failed: failedCount,
+    diagnosticFailures: failures.length
   },
   guarantees: Object.fromEntries(adapters.map(adapter => [
     adapter,
@@ -157,7 +154,8 @@ process.stdout.write(JSON.stringify({
   status: attestation.status,
   evidenceCases: testCount,
   passed: passedCount,
-  failed: failures.length,
+  failed: failedCount,
+  diagnosticFailures: failures.length,
   output: path.relative(root, output)
 }) + '\n');
 if (attestation.status !== 'passed') process.exitCode = 1;

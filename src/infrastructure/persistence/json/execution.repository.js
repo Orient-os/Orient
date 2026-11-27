@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
 
 const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
@@ -79,6 +80,9 @@ class ExecutionRepository {
         crypto.randomUUID(),
       requestId: execution.requestId || null,
       goalId: execution.goalId || null,
+      tenantId: execution.tenantId ?? execution.metadata?.tenantId ?? null,
+      userId: execution.userId ?? execution.metadata?.userId ?? null,
+      workspaceId: execution.workspaceId ?? execution.metadata?.workspaceId ?? null,
       parentExecutionId: execution.parentExecutionId || null,
       executionVersion: Number(execution.executionVersion || 1),
       status: execution.status || 'created',
@@ -319,6 +323,7 @@ class ExecutionRepository {
       }
 
       const current = this.normalize(executions[index]);
+      assertExecutionIdentityUnchanged(current, patch);
 
       if (tenantId && current.metadata?.tenantId !== tenantId && !(tenantId === 'local' && !current.metadata?.tenantId)) return null;
       if (tenantId && patch.metadata?.tenantId && patch.metadata.tenantId !== tenantId) throw new Error('Execution tenant mismatch');
@@ -340,6 +345,7 @@ class ExecutionRepository {
       const updated = this.normalize({
         ...current,
         ...patch,
+        ...preserveExecutionIdentity(current, patch),
         ...(current.cancellationRequested ? {
           cancellationRequested: true,
           cancellationReason: current.cancellationReason || patch.cancellationReason || null

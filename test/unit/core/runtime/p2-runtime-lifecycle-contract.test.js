@@ -122,7 +122,7 @@ test('safe quota initialization failure can retry on the same Runtime before rec
 test('partial persistence recovery failure is terminal and cannot restart the Runtime', async () => {
   const persistence = {
     workflows: {
-      findAll: async () => { throw new Error('partial workflow recovery'); }
+      findAll: () => { throw new Error('partial workflow recovery'); }
     }
   };
   const runtime = createRuntime({ persistence });

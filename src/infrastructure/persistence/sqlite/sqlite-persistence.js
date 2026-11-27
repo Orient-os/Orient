@@ -267,17 +267,42 @@ class SqliteIdempotencyRepository {
     }
     return { created: true, key, record: actual };
   }
-  complete(key, result, { tenantId = null } = {}) {
-    const record = this.findByKey(key, { tenantId }); if (!record) return null;
-    record.status = 'completed'; record.result = result ?? null; record.completedAt = new Date().toISOString();
-    this.db.run("UPDATE idempotency SET payload = ?, status = 'completed', updated_at = ? WHERE key = ?", [JSON.stringify(record), record.completedAt, key]);
-    return record;
+  transitionTerminal(key, status, value, { tenantId = null } = {}) {
+    const record = this.findByKey(key, { tenantId });
+    if (!record) return null;
+    if (record.status !== 'running') return record;
+
+    const completedAt = new Date().toISOString();
+    const next = {
+      ...record,
+      status,
+      ...(status === 'completed' ? { result: value ?? null } : {
+        error: { code: value?.code || 'EXECUTION_FAILED', message: value?.message || String(value || '') }
+      }),
+      completedAt
+    };
+    let tenantClause = '';
+    const params = [JSON.stringify(next), status, completedAt, key];
+    if (tenantId) {
+      tenantClause = tenantId === 'local'
+        ? " AND (json_extract(payload, '$.tenantId') = ? OR json_extract(payload, '$.tenantId') IS NULL)"
+        : " AND json_extract(payload, '$.tenantId') = ?";
+      params.push(tenantId);
+    }
+    // A single conditional UPDATE is the terminal compare-and-set. SQLite serializes
+    // writers, and the status predicate prevents a late competing terminal writer
+    // from replacing the first committed result.
+    this.db.run(
+      "UPDATE idempotency SET payload = ?, status = ?, updated_at = ? WHERE key = ? AND status = 'running'" + tenantClause,
+      params
+    );
+    return this.findByKey(key, { tenantId });
   }
-  fail(key, error, { tenantId = null } = {}) {
-    const record = this.findByKey(key, { tenantId }); if (!record) return null;
-    record.status = 'failed'; record.error = { code: error?.code || 'EXECUTION_FAILED', message: error?.message || String(error || '') }; record.completedAt = new Date().toISOString();
-    this.db.run("UPDATE idempotency SET payload = ?, status = 'failed', updated_at = ? WHERE key = ?", [JSON.stringify(record), record.completedAt, key]);
-    return record;
+  complete(key, result, options = {}) {
+    return this.transitionTerminal(key, 'completed', result, options);
+  }
+  fail(key, error, options = {}) {
+    return this.transitionTerminal(key, 'failed', error, options);
   }
   delete(key, { tenantId = null } = {}) { const found=this.findByKey(key, { tenantId }); if(!found)return false; this.db.run('DELETE FROM idempotency WHERE key = ?', [key]); return true; }
   clear() { this.db.run('DELETE FROM idempotency;'); }

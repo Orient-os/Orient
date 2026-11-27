@@ -154,3 +154,29 @@ test('deferred runtime infrastructure performs quota initialization only after e
   assert.equal(initialized, 1);
   await coordinator.shutdown();
 });
+
+
+test('runtime rejects workflow execution when neither durable nor explicitly degraded workflow capability is enabled', async () => {
+  const OrientRuntime = require('../../../../src/core/runtime/orient-runtime');
+  const runtime = new OrientRuntime({
+    toolRegistry: { requireAuthorization() {} },
+    agentOrchestrator: {
+      async plan() { return { plan: { steps: [] }, validation: { valid: true, steps: [] } }; }
+    },
+    persistenceCapabilities: {
+      adapter: 'json',
+      profile: 'local',
+      capabilities: {
+        'workflow.durable': { enabled: false, status: 'UNSUPPORTED' },
+        'workflow.ephemeral': { enabled: false, status: 'DEGRADED' }
+      }
+    }
+  });
+
+  await assert.rejects(
+    runtime.executeWorkflow({ workflowId: 'blocked-workflow' }),
+    error => error.code === 'PERSISTENCE_CAPABILITY_MISSING' &&
+      error.capability === 'workflow.durable'
+  );
+  await runtime.shutdown({ cancelQueued: false });
+});

@@ -266,7 +266,29 @@ class OrientRuntime {
     return this.infrastructureCoordinator.shutdown(options);
   }
 
+  requirePersistenceCapability(name) {
+    if (!this.persistenceCapabilities) return true;
+    const capability = this.persistenceCapabilities.capabilities?.[name];
+    if (!capability?.enabled) {
+      throw Object.assign(new Error(`Persistence capability "${name}" is not enabled`), {
+        code: 'PERSISTENCE_CAPABILITY_MISSING',
+        adapter: this.persistenceCapabilities.adapter,
+        profile: this.persistenceCapabilities.profile,
+        capability: name,
+        phase: 'runtime'
+      });
+    }
+    return capability;
+  }
+
   async executeWorkflow(input, options = {}) {
+    if (this.persistenceCapabilities) {
+      const durableEnabled = this.persistenceCapabilities.capabilities?.['workflow.durable']?.enabled === true;
+      const ephemeralEnabled = this.persistenceCapabilities.capabilities?.['workflow.ephemeral']?.enabled === true;
+      if (!durableEnabled && !ephemeralEnabled) {
+        this.requirePersistenceCapability('workflow.durable');
+      }
+    }
     return this.workflowExecutionCoordinator.execute(input, options);
   }
 
@@ -287,6 +309,7 @@ class OrientRuntime {
   }
 
   async resume(executionId, options = {}, ownerSessionContext = null, persistencePrincipal = null) {
+    this.requirePersistenceCapability('execution.resumeLease');
     try {
       const result = await this.requestExecutionCoordinator.resume(executionId, {
         ...options,
@@ -342,6 +365,7 @@ class OrientRuntime {
 
 
   async cancelExecution(executionId, { reason = 'Execution cancellation requested', persistencePrincipal = null } = {}) {
+    this.requirePersistenceCapability('execution.cancellation');
     if (!this.persistence?.executions?.requestCancellation) {
       throw Object.assign(new Error('Durable execution cancellation storage is required'), {
         code: 'EXECUTION_CANCELLATION_STORAGE_REQUIRED'
@@ -376,6 +400,7 @@ class OrientRuntime {
   }
 
   async getExecutionApprovals(executionId, { persistencePrincipal = null } = {}) {
+    this.requirePersistenceCapability('approval.durable');
     if (!this.approvalService?.listForExecution) {
       throw Object.assign(new Error('Approval service is required for approval status'), {
         code: 'APPROVAL_SERVICE_REQUIRED'
@@ -454,6 +479,7 @@ class OrientRuntime {
   }
 
   async decideApproval(options = {}) {
+    this.requirePersistenceCapability('approval.durable');
     if (!this.approvalService?.decide) {
       throw Object.assign(new Error('Durable approval service is required'), { code: 'APPROVAL_SERVICE_REQUIRED' });
     }
@@ -490,6 +516,7 @@ class OrientRuntime {
   }
 
   async listPendingApprovals({ limit = 100, persistencePrincipal = null } = {}) {
+    this.requirePersistenceCapability('approval.durable');
     if (!this.approvalService?.listPending) {
       throw Object.assign(new Error('Approval service is required for the pending inbox'), {
         code: 'APPROVAL_SERVICE_REQUIRED'

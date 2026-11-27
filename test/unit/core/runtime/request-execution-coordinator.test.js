@@ -1440,3 +1440,60 @@ test('reconciles only the exact running operation when its durable approval reco
   assert.equal(authorizationCheckpointed, true);
   assert.equal(leaseReleases, 1);
 });
+
+test('approval challenge labels non-project tools as tool actions and does not parse arbitrary payloads as file changes', async () => {
+  let issuedApproval = null;
+  const coordinator = new RequestExecutionCoordinator({
+    agentOrchestrator: {
+      plan: async () => ({
+        plan: { intent: 'test.generic-approval-summary', steps: [{ step: 1, tool: 'calendar.create_event' }] },
+        validation: { valid: true, steps: [{ step: 1, tool: 'calendar.create_event' }] }
+      })
+    },
+    agentExecutionCoordinator: {
+      run: async ({ context }) => {
+        throw Object.assign(new Error('approval required'), {
+          code: 'APPROVAL_REQUIRED',
+          executionContext: {
+            executionId: context.executionId,
+            step: 1,
+            planRevision: 1,
+            planSha256: 'c'.repeat(64),
+            tool: 'calendar.create_event',
+            capability: 'calendar.write',
+            tenantId: 'tenant-a',
+            input: ['untrusted', 'array', 'payload']
+          }
+        });
+      }
+    },
+    recoveryCoordinator: { fail: async () => { throw new Error('approval must not enter failure recovery'); } },
+    persistence: null,
+    persistenceCoordinator: {
+      persistExecution: async () => ({}),
+      checkpoint: async () => {},
+      persistEvents: async () => {}
+    },
+    quotaService: { assertTenant: () => {}, assertInputSize: () => {} },
+    quotaPolicy: { toJSON: () => ({}) },
+    approvalService: {
+      issue: async args => {
+        issuedApproval = args;
+        return { approvalId: 'approval-generic-summary-test' };
+      }
+    },
+    tenantId: 'tenant-a',
+    maxInputChars: 1000
+  });
+
+  await assert.rejects(
+    coordinator.execute('review generic tool action'),
+    error => error.code === 'APPROVAL_REQUIRED' &&
+      error.executionContext.approvalId === 'approval-generic-summary-test'
+  );
+
+  assert.deepEqual(issuedApproval.metadata.approvalSummary, {
+    kind: 'tool_action',
+    tool: 'calendar.create_event'
+  });
+});

@@ -185,13 +185,50 @@ jobs:
       - name: Install PostgreSQL client dependency
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Run PostgreSQL integration suite
+      - name: Run PostgreSQL role provisioning integration suite
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orient_test
+          ORIENT_RUN_ROLE_PROVISIONING_INTEGRATION: "1"
+        run: node --test --test-timeout=120000 test/integration/postgres-role-provisioning.integration.test.js
+
+      - name: Create isolated database for persistence behavioral evidence
+        env:
+          ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: |
-          node --test --test-timeout=120000 test/integration/postgres-persistence.integration.test.js
-          node --test --test-timeout=120000 test/integration/postgres-task-idempotency.integration.test.js
-          ORIENT_RUN_ROLE_PROVISIONING_INTEGRATION=1 node --test --test-timeout=120000 test/integration/postgres-role-provisioning.integration.test.js
+          node <<'NODE'
+          const { Pool } = require('pg');
+          const name = 'orient_persistence_evidence';
+          (async () => {
+            const pool = new Pool({ connectionString: process.env.ADMIN_DATABASE_URL });
+            try {
+              const existing = await pool.query('SELECT 1 FROM pg_database WHERE datname = $1', [name]);
+              if (existing.rowCount === 0) {
+                await pool.query('CREATE DATABASE "' + name + '"');
+              }
+            } finally {
+              await pool.end();
+            }
+          })().catch(error => {
+            process.stderr.write(error.stack + '\\n');
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Generate adapter-specific persistence behavioral evidence
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/orient_persistence_evidence
+          ORIENT_EVIDENCE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ORIENT_PERSISTENCE_EVIDENCE_OUTPUT: artifacts/persistence-behavioral-evidence.json
+        run: node scripts/verify-persistence-evidence.js
+
+      - name: Publish persistence behavioral evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orient-persistence-behavioral-evidence
+          path: artifacts/persistence-behavioral-evidence.json
+          if-no-files-found: error
+          retention-days: 30
 
   full-repository-suite:
     name: Full Repository Test Suite (Node 24 + PostgreSQL)

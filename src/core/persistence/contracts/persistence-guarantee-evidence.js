@@ -111,7 +111,7 @@ const EVIDENCE = Object.freeze({
     'event.identity.idempotency': Object.freeze([
       Object.freeze({
         file: 'test/integration/postgres-persistence.integration.test.js',
-        testName: 'PostgreSQL durable mission events serialize aggregate sequences and isolate tenants'
+        testName: 'PostgreSQL mission event identity is idempotent and cannot be rebound across tenants'
       })
     ])
   })

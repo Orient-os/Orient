@@ -557,6 +557,53 @@ test('rejects malformed persisted owner login-failure records at every schema bo
   }
 });
 
+test('rejects malformed and duplicate persisted login-failure keys', t => {
+  const invalidKeys = ['', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64)];
+  for (const [index, key] of invalidKeys.entries()) {
+    const { stateFile } = fixture(t);
+    new OwnerIdentityService({ stateFile, bootstrapPassword: 'temporary-owner-password-9F!x', now: () => 10000 });
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.loginFailures = [{
+      key, count: 1, windowStartedAt: 10000, blockedUntil: 0, keyVersion: 2
+    }];
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    assert.throws(
+      () => new OwnerIdentityService({ stateFile, now: () => 10000 }),
+      error => error.code === 'OWNER_IDENTITY_STATE_INVALID',
+      'invalid persisted key must fail closed at case ' + index
+    );
+  }
+
+  const { stateFile } = fixture(t);
+  new OwnerIdentityService({ stateFile, bootstrapPassword: 'temporary-owner-password-9F!x', now: () => 10000 });
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  const duplicateKey = 'a'.repeat(64);
+  const record = { key: duplicateKey, count: 1, windowStartedAt: 10000, blockedUntil: 0, keyVersion: 2 };
+  state.loginFailures = [record, { ...record }];
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  assert.throws(
+    () => new OwnerIdentityService({ stateFile, now: () => 10000 }),
+    error => error.code === 'OWNER_IDENTITY_STATE_INVALID',
+    'duplicate persisted keys must fail closed'
+  );
+});
+
+test('accepts each supported persisted login-failure key version', t => {
+  const { stateFile } = fixture(t);
+  new OwnerIdentityService({ stateFile, bootstrapPassword: 'temporary-owner-password-9F!x', now: () => 10000 });
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  state.loginFailures = [1, 2].map((keyVersion, index) => ({
+    key: (index + 1).toString(16).padStart(64, '0'),
+    count: 1,
+    windowStartedAt: 10000,
+    blockedUntil: 0,
+    keyVersion
+  }));
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  const reloaded = new OwnerIdentityService({ stateFile, now: () => 10000 });
+  assert.equal(reloaded.loginFailures.size, 2);
+});
+
 test('expires a login lockout at the exact persisted window boundary before recording a new failure', async t => {
   const { stateFile } = fixture(t);
   const identity = new OwnerIdentityService({

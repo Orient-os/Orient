@@ -43,7 +43,20 @@ function validateManifestShape(manifest, profile) {
     if (!entry || !Object.values(CAPABILITY_STATUS).includes(entry.status) ||
         !Array.isArray(entry.guarantees) || !Array.isArray(entry.interfaces)) {
       fail('PERSISTENCE_MANIFEST_INVALID', 'Persistence capability declaration is invalid', {
-        adapter: manifest.adapter, profile, phase: 'preflight', capability: name
+        adapter: manifest.adapter, profile, phase: 'preflight', capability: name,
+        expected: 'status-guarantees-and-interface-arrays'
+      });
+    }
+    const validInterface = value =>
+      typeof value === 'string' &&
+      /^[A-Za-z_$][\\w$]*\\.[A-Za-z_$][\\w$]*$/.test(value);
+    if (new Set(entry.interfaces).size !== entry.interfaces.length ||
+        entry.interfaces.some(value => !validInterface(value)) ||
+        (entry.status === CAPABILITY_STATUS.SUPPORTED && entry.interfaces.length === 0)) {
+      fail('PERSISTENCE_MANIFEST_INVALID', 'Persistence capability must declare unique, valid required interfaces when supported', {
+        adapter: manifest.adapter, profile, phase: 'preflight', capability: name,
+        expected: 'supported-capability-with-unique-repository-method-paths',
+        actual: entry.interfaces
       });
     }
   }

@@ -31,6 +31,7 @@ class RuntimeInfrastructureCoordinator {
     this.deferStartup = deferStartup === true;
     this.started = false;
     this.startPromise = null;
+    this.startFailure = null;
     this.ownsWorkflowScheduler = !workflowScheduler;
     this.tenantId = tenantId || 'local';
     this.workflowPersistenceEnabled = workflowPersistenceEnabled === true;
@@ -136,24 +137,62 @@ class RuntimeInfrastructureCoordinator {
   }
 
   start() {
+    if (this.startFailure) return Promise.reject(this.startFailure);
     if (this.started) return Promise.resolve(this.recoveryReady).then(recovered => ({ started: true, recovered }));
     if (this.startPromise) return this.startPromise;
 
-    this.startPromise = (async () => {
+    const operation = (async () => {
+      // Tenant quota initialization is an idempotent upsert. A failure before
+      // workflow recovery begins is therefore safe to retry on this coordinator.
       this.quotaReady = this.tenantQuotaRepository?.ensureTenant
         ? Promise.resolve().then(() => this.tenantQuotaRepository.ensureTenant(this.tenantId, this.tenantQuotaPolicy))
         : Promise.resolve();
       await this.quotaReady;
 
-      this.recoveryReady =
-        this.ownsWorkflowScheduler && !this.workflowScheduler?.async && this.workflowRepository?.findAll
-          ? Promise.resolve().then(() => this.workflowScheduler.recoverPersisted())
-          : Promise.resolve(0);
-      const recovered = await this.recoveryReady;
-      this.started = true;
-      return { started: true, recovered };
+      const shouldRecoverPersistedWorkflows =
+        this.ownsWorkflowScheduler && !this.workflowScheduler?.async && this.workflowRepository?.findAll;
+
+      if (!shouldRecoverPersistedWorkflows) {
+        this.recoveryReady = Promise.resolve(0);
+        this.started = true;
+        return { started: true, recovered: 0 };
+      }
+
+      // Recovery may mutate durable workflow state and in-memory scheduler
+      // queues incrementally. Once entered, an unknown partial failure cannot
+      // be retried safely on this coordinator.
+      try {
+        this.recoveryReady = Promise.resolve().then(() => this.workflowScheduler.recoverPersisted());
+        const recovered = await this.recoveryReady;
+        this.started = true;
+        return { started: true, recovered };
+      } catch (cause) {
+        const error = new Error(
+          'Workflow persistence recovery failed after partial side effects. ' +
+          'This coordinator is permanently failed and cannot be restarted. ' +
+          'Discard the current Runtime and create a new Runtime. The application process must be ' +
+          'restarted before resuming work; do not retry on this coordinator.'
+        );
+        error.name = 'PersistenceRecoveryPartialFailure';
+        error.code = 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE';
+        error.phase = 'runtime-startup';
+        error.retryable = false;
+        error.tenantId = this.tenantId;
+        error.cause = cause;
+        this.startFailure = error;
+        throw error;
+      }
     })();
-    return this.startPromise;
+
+    this.startPromise = operation;
+    operation.catch(() => {
+      // Only failures before workflow recovery starts are retryable. Keep the
+      // rejected operation and terminal diagnostic after a recovery failure.
+      if (this.startPromise === operation && !this.startFailure) {
+        this.startPromise = null;
+      }
+    });
+    return operation;
   }
 
   shutdown(options = {}) {

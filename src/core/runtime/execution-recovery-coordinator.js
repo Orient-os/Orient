@@ -38,7 +38,23 @@ class ExecutionRecoveryCoordinator {
       context.transitionAgentTo('recovering');
     }
 
-    const recovery = await this.classify(context, error);
+    let recovery;
+    try {
+      recovery = await this.classify(context, error);
+    } catch (classifierError) {
+      const classifierDiagnostic = {
+        code: classifierError?.code || 'RECOVERY_CLASSIFICATION_FAILED',
+        message: classifierError?.message || String(classifierError)
+      };
+      context.record('recovery.classification_failed', classifierDiagnostic);
+      // Classification is advisory. If it fails, fail closed to abort while
+      // preserving the original execution error as the terminal failure.
+      recovery = {
+        action: 'abort',
+        reason: 'recovery_classifier_failed',
+        metadata: { classifierError: classifierDiagnostic }
+      };
+    }
     context.record('recovery.completed', recovery);
     context.fail(error);
 

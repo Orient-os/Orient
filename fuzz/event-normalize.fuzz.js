@@ -17,7 +17,7 @@ module.exports.fuzz = function fuzz(data) {
 
   const normalized = repository.normalize(candidate);
   if (!normalized || typeof normalized !== 'object' ||
-      typeof normalized.id !== 'string' || normalized.id.length === 0 ||
+      (candidate.id ? normalized.id !== candidate.id : typeof normalized.id !== 'string' || normalized.id.length === 0) ||
       !normalized.data || typeof normalized.data !== 'object' ||
       Array.isArray(normalized.data)) {
     throw new Error('Normalized event violated the event envelope contract');

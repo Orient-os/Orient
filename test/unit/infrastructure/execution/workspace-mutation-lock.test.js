@@ -47,7 +47,7 @@ function readFirstLine(child) {
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
-      const newline = output.indexOf('\\n');
+      const newline = output.indexOf('\n');
       if (newline !== -1) {
         child.stdout.removeAllListeners('data');
         resolve(JSON.parse(output.slice(0, newline)));
@@ -55,7 +55,7 @@ function readFirstLine(child) {
     });
     child.once('error', reject);
     child.once('exit', code => {
-      if (!output.includes('\\n')) reject(new Error('worker exited without a result; code=' + code));
+      if (!output.includes('\n')) reject(new Error('worker exited without a result; code=' + code));
     });
   });
 }

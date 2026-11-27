@@ -152,9 +152,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         // precedence during reconciliation; pathname deletion is avoided because
         // checking identity and unlinking are not atomic.
       }
-      if (intentCreated && serialized?.status === 'failed' &&
-          serialized?.rollback?.rolledBack !== true &&
-          serialized?.error?.code !== 'CHANGE_PRECONDITION_FAILED') {
+      if (intentCreated && !verifiedOutcome && !rolledBackOutcome) {
         // Mutation outcome is not proven safe. Keep the durable workspace lock
         // until an operator inspects the pending intent and recovers explicitly.
         retainWorkspaceLock = true;

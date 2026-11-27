@@ -8,6 +8,9 @@ function runtimeFixture(overrides = {}) {
   const calls = [];
   const runtime = Object.create(OrientRuntime.prototype);
   runtime.tenantId = 'tenant-a';
+  // These tests exercise approval reconciliation after Runtime startup.
+  runtime.ready = true;
+  runtime.lifecycleState = 'READY';
   runtime.requestExecutionCoordinator = {
     async resume(executionId, options) {
       calls.push({ kind: 'resume', executionId, options });

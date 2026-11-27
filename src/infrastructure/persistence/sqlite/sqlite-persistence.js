@@ -16,6 +16,7 @@ function terminalConflict(currentStatus, requestedStatus) {
   return error;
 }
 const { isDeepStrictEqual } = require('node:util');
+const { assertExecutionIdentityUnchanged, preserveExecutionIdentity } = require('../execution-identity');
 const SqliteDatabase = require('./sqlite-database');
 const { SqliteWorkflowRepository, SqliteWorkflowLeaseRepository } = require('./workflow.repository');
 const { SqliteMemoryRepository, SqliteMemoryAuditRepository } = require('./memory.repository');
@@ -31,6 +32,9 @@ class SqliteExecutionRepository {
       id: execution.id || execution.executionId || crypto.randomUUID(),
       executionId: execution.executionId || execution.id || crypto.randomUUID(),
       executionVersion: Number(execution.executionVersion || 1),
+      tenantId: execution.tenantId ?? execution.metadata?.tenantId ?? null,
+      userId: execution.userId ?? execution.metadata?.userId ?? null,
+      workspaceId: execution.workspaceId ?? execution.metadata?.workspaceId ?? null,
       status: execution.status || 'created',
       agentLifecycle: execution.agentLifecycle || 'created',
       metadata: execution.metadata && typeof execution.metadata === 'object' ? { ...execution.metadata } : {},
@@ -84,6 +88,7 @@ class SqliteExecutionRepository {
   update(executionId, patch, { tenantId = null } = {}) {
     const current = this.findById(executionId, { tenantId });
     if (!current) return null;
+    assertExecutionIdentityUnchanged(current, patch);
 
     if (TERMINAL_EXECUTION_STATUSES.includes(current.status)) {
       const requested = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId });
@@ -93,7 +98,7 @@ class SqliteExecutionRepository {
     }
     if (current.cancellationRequested && ['completed', 'failed'].includes(patch.status)) return current;
 
-    const updated = this.normalize({ ...current, ...patch, id: current.id, executionId: current.executionId, updatedAt: new Date().toISOString() });
+    const updated = this.normalize({ ...current, ...patch, ...preserveExecutionIdentity(current, patch), updatedAt: new Date().toISOString() });
     const tenantClause = tenantId
       ? (tenantId === 'local'
           ? " AND (json_extract(payload, '$.metadata.tenantId') = ? OR json_extract(payload, '$.metadata.tenantId') IS NULL)"

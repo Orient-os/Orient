@@ -58,3 +58,32 @@ test('JSON execution terminal states are immutable across retries and repository
     );
   }
 });
+
+
+test('JSON terminal integrity includes durable failure details, not only status', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-json-terminal-failure-'));
+  const filePath = path.join(directory, 'executions.json');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const repository = new ExecutionRepository(filePath);
+  repository.insert({
+    executionId: 'execution-failure-details',
+    requestId: 'request-failure-details',
+    status: 'running',
+    metadata: { tenantId: 'tenant-a' },
+    agentState: { errors: [] }
+  }, { tenantId: 'tenant-a' });
+
+  repository.update('execution-failure-details', {
+    status: 'failed',
+    completedAt: '2026-11-27T10:00:00.000Z',
+    agentState: { errors: [{ code: 'ORIGINAL_FAILURE', message: 'original' }] }
+  }, { tenantId: 'tenant-a' });
+
+  assert.throws(
+    () => repository.update('execution-failure-details', {
+      status: 'failed',
+      agentState: { errors: [{ code: 'REPLACED_FAILURE', message: 'tampered' }] }
+    }, { tenantId: 'tenant-a' }),
+    error => error.code === 'EXECUTION_TERMINAL_CONFLICT'
+  );
+});

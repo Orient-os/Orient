@@ -138,7 +138,7 @@ test('Postgres workflow writes reject stale fencing tokens', async () => {
     }, 'tenant-a', { workerPrincipal }),
     error => error.code === 'WORKFLOW_FENCING_REJECTED'
   );
-  assert.match(db.calls[1].text, /worker_session_id/);
+  assert.ok(db.calls[1].text.includes("COALESCE(payload->>'status', 'created') NOT IN ('completed', 'failed', 'cancelled')"));
   assert.match(db.calls[1].text, /fencing_token/);
 });
 

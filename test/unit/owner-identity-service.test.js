@@ -672,7 +672,7 @@ test('rejects persisted password verifiers with any prefix or suffix outside the
 });
 
 test('does not restore persisted owner sessions when their CSRF token has a prefix or suffix', async t => {
-  for (const malformedToken of ['prefix-', '-suffix']) {
+  for (const malformedToken of ['p'.repeat(60), 's'.repeat(60)]) {
     const { stateFile } = fixture(t);
     const identity = new OwnerIdentityService({
       stateFile,
@@ -685,7 +685,7 @@ test('does not restore persisted owner sessions when their CSRF token has a pref
     assert.equal(login.ok, true);
 
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    state.sessions[0].csrfToken = malformedToken.startsWith('prefix-')
+    state.sessions[0].csrfToken = malformedToken.startsWith('p')
       ? malformedToken + state.sessions[0].csrfToken
       : state.sessions[0].csrfToken + malformedToken;
     fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });

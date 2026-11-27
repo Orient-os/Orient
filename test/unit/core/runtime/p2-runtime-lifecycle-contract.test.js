@@ -39,7 +39,7 @@ test('runtime is single-use: start succeeds once and shutdown permanently closes
   );
 });
 
-test('execute, executeWorkflow, and resume reject before READY without delegation', async () => {
+test('all side-effecting Runtime entry points reject before READY without delegation', async () => {
   const runtime = createRuntime();
   let executeCalls = 0;
   let workflowCalls = 0;
@@ -75,15 +75,18 @@ test('execute, executeWorkflow, and resume reject before READY without delegatio
     }
   };
 
-  for (const operation of [
-    () => runtime.execute({ goal: 'must not run' }),
-    () => runtime.executeWorkflow({ goal: 'must not run' }),
-    () => runtime.resume('execution-not-ready'),
-    () => runtime.cancelExecution('execution-not-ready'),
-    () => runtime.decideApproval({ approvalId: 'approval-not-ready', decision: 'approved' })
-  ]) {
-    await assert.rejects(operation, error => error.code === 'RUNTIME_NOT_READY');
-  }
+  const results = await Promise.allSettled([
+    runtime.execute({ goal: 'must not run' }),
+    runtime.executeWorkflow({ goal: 'must not run' }),
+    runtime.resume('execution-not-ready'),
+    runtime.cancelExecution('execution-not-ready'),
+    runtime.decideApproval({ approvalId: 'approval-not-ready', decision: 'approved' })
+  ]);
+
+  assert.deepEqual(
+    results.map(result => result.status === 'rejected' ? result.reason.code : 'fulfilled'),
+    ['RUNTIME_NOT_READY', 'RUNTIME_NOT_READY', 'RUNTIME_NOT_READY', 'RUNTIME_NOT_READY', 'RUNTIME_NOT_READY']
+  );
 
   assert.deepEqual(
     { executeCalls, workflowCalls, resumeCalls, cancelCalls, approvalDecisionCalls },

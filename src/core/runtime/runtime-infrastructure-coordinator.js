@@ -32,7 +32,6 @@ class RuntimeInfrastructureCoordinator {
     this.started = false;
     this.startPromise = null;
     this.startFailure = null;
-    this.recoveryStarted = false;
     this.ownsWorkflowScheduler = !workflowScheduler;
     this.tenantId = tenantId || 'local';
     this.workflowPersistenceEnabled = workflowPersistenceEnabled === true;
@@ -162,7 +161,6 @@ class RuntimeInfrastructureCoordinator {
       // Recovery may mutate durable workflow state and in-memory scheduler
       // queues incrementally. Once entered, an unknown partial failure cannot
       // be retried safely on this coordinator.
-      this.recoveryStarted = true;
       try {
         this.recoveryReady = Promise.resolve().then(() => this.workflowScheduler.recoverPersisted());
         const recovered = await this.recoveryReady;
@@ -172,8 +170,8 @@ class RuntimeInfrastructureCoordinator {
         const error = new Error(
           'Workflow persistence recovery failed after partial side effects. ' +
           'This coordinator is permanently failed and cannot be restarted. ' +
-          'Discard the current Runtime and create a new Runtime; restart the application process ' +
-          'if safe Runtime replacement is unavailable.'
+          'Discard the current Runtime and create a new Runtime. The application process must be ' +
+          'restarted before resuming work; do not retry on this coordinator.'
         );
         error.name = 'PersistenceRecoveryPartialFailure';
         error.code = 'PERSISTENCE_RECOVERY_PARTIAL_FAILURE';

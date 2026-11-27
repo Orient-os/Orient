@@ -62,7 +62,7 @@ test('partial workflow recovery permanently rejects coordinator restart with an 
     /partial/i.test(error.message) &&
     /cannot be restarted/i.test(error.message) &&
     /new Runtime/i.test(error.message) &&
-    /restart the application/i.test(error.message);
+    /application process must be restarted before resuming work/i.test(error.message);
 
   await assert.rejects(coordinator.start(), isTerminalRecoveryError);
   await assert.rejects(coordinator.start(), isTerminalRecoveryError);

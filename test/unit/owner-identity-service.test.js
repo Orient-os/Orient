@@ -633,3 +633,82 @@ test('expires a login lockout at the exact persisted window boundary before reco
   assert.equal(identity.loginFailures.values().next().value.count, 1);
   assert.equal(identity.loginFailures.values().next().value.windowStartedAt, 2000);
 });
+
+test('canonicalizes owner email before persisting and comparing identity', t => {
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({
+    stateFile,
+    ownerEmail: '  Owner@Example.COM  ',
+    bootstrapPassword: 'temporary-owner-password-9F!x'
+  });
+
+  assert.equal(identity.ownerEmail, 'owner@example.com');
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).email, 'owner@example.com');
+});
+
+test('rejects persisted password verifiers with any prefix or suffix outside the exact hash grammar', t => {
+  const malformedVerifiers = [
+    'x' + 'a'.repeat(128) + ':' + 'b'.repeat(32),
+    'a'.repeat(128) + ':' + 'b'.repeat(32) + 'x',
+    'legacy:' + 'a'.repeat(128) + ':' + 'b'.repeat(32) + 'x'
+  ];
+
+  for (const verifier of malformedVerifiers) {
+    const { stateFile } = fixture(t);
+    new OwnerIdentityService({
+      stateFile,
+      bootstrapPassword: 'temporary-owner-password-9F!x'
+    });
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.passwordHash = verifier;
+    fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
+
+    assert.throws(
+      () => new OwnerIdentityService({ stateFile }),
+      error => error.code === 'OWNER_IDENTITY_STATE_INVALID',
+      'persisted verifier must match the complete hash grammar'
+    );
+  }
+});
+
+test('does not restore persisted owner sessions when their CSRF token has a prefix or suffix', async t => {
+  for (const malformedToken of ['prefix-', '-suffix']) {
+    const { stateFile } = fixture(t);
+    const identity = new OwnerIdentityService({
+      stateFile,
+      bootstrapPassword: 'temporary-owner-password-9F!x'
+    });
+    const login = await identity.login({
+      username: 'Admin',
+      password: 'temporary-owner-password-9F!x'
+    });
+    assert.equal(login.ok, true);
+
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.sessions[0].csrfToken = malformedToken.startsWith('prefix-')
+      ? malformedToken + state.sessions[0].csrfToken
+      : state.sessions[0].csrfToken + malformedToken;
+    fs.writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
+
+    const reloaded = new OwnerIdentityService({ stateFile });
+    assert.equal(
+      reloaded.authenticate(login.token),
+      null,
+      'a session with a non-canonical persisted CSRF token must not be restored'
+    );
+  }
+});
+
+test('rejects non-string password inputs without invoking password verification', async t => {
+  const { stateFile } = fixture(t);
+  const identity = new OwnerIdentityService({
+    stateFile,
+    bootstrapPassword: 'temporary-owner-password-9F!x'
+  });
+
+  for (const password of [null, undefined, 42, {}, ['temporary-owner-password-9F!x']]) {
+    const result = await identity.login({ username: 'Admin', password });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'OWNER_LOGIN_FAILED');
+  }
+});

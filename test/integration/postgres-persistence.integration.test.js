@@ -1543,6 +1543,58 @@ test('PostgreSQL durable mission events serialize aggregate sequences and isolat
 });
 
 
+test('PostgreSQL mission event identity is idempotent and cannot be rebound across tenants', async t => {
+  await persistence.initialize();
+  const tenantA = 'mission-idempotency-a-' + randomUUID();
+  const tenantB = 'mission-idempotency-b-' + randomUUID();
+  const aggregateId = 'mission-idempotency-' + randomUUID();
+  const eventId = randomUUID();
+  const event = {
+    id: eventId,
+    aggregateId,
+    executionId: aggregateId,
+    type: 'workflow.state.changed',
+    timestamp: new Date().toISOString(),
+    data: { tenantId: tenantA, state: 'QUEUED' }
+  };
+  t.after(async () => {
+    await pool.query('DELETE FROM events WHERE event_id=$1', [eventId]);
+  });
+
+  const first = await persistence.events.appendMissionEvent(event, { tenantId: tenantA });
+  const replay = await persistence.events.appendMissionEvent(event, { tenantId: tenantA });
+  assert.equal(first.id, eventId);
+  assert.equal(replay.id, first.id);
+  assert.equal(replay.sequence, first.sequence);
+  assert.deepEqual(replay.data, first.data);
+
+  await assert.rejects(
+    persistence.events.appendMissionEvent({
+      ...event,
+      data: { tenantId: tenantA, state: 'COMPLETED' }
+    }, { tenantId: tenantA }),
+    error => error.code === 'MISSION_EVENT_ID_CONFLICT'
+  );
+
+  await assert.rejects(
+    persistence.events.appendMissionEvent({
+      ...event,
+      data: { tenantId: tenantB, state: 'QUEUED' }
+    }, { tenantId: tenantB }),
+    error => error.code === 'MISSION_EVENT_ID_CONFLICT'
+  );
+
+  const stored = await pool.query(
+    'SELECT tenant_id, aggregate_id, sequence FROM events WHERE event_id=$1',
+    [eventId]
+  );
+  assert.equal(stored.rowCount, 1);
+  assert.equal(stored.rows[0].tenant_id, tenantA);
+  assert.equal(stored.rows[0].aggregate_id, aggregateId);
+  assert.equal(Number(stored.rows[0].sequence), first.sequence);
+});
+
+
 test('PostgreSQL workflow outbox is tenant-scoped and acknowledges under row lock', async t => {
   await persistence.initialize();
   const tenantId = 'outbox-tenant-' + randomUUID();

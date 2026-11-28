@@ -20,7 +20,7 @@ There is no portable atomic compare-and-swap for arbitrary external file writers
 - Android Termux uses the Linux process identity interface when the runtime exposes the required `/proc` records.
 - Other platforms, shared network filesystems, host changes, boot-session changes, missing/corrupt owner metadata, and unknown process state fail closed. Do not work around those checks by deleting files.
 
-The inspection output includes bounded before-image file contents from the private intent journal. Treat terminal output and copied incident records as sensitive source/configuration data; store them only in the approved private incident location.
+The inspection output includes a structured `classification` as well as bounded before-image file contents from the private intent journal when a valid owner record exists. Classification states are `unlocked`, `locked`, or `recovery_required`. A missing `owner.json` and a zero-byte `owner.json` are reported separately as `owner_metadata_missing` and `owner_metadata_incomplete`; neither state unlocks the workspace or permits a contender to acquire the lock. Malformed non-empty JSON, symlinks, and unsafe permissions remain corruption errors. Treat terminal output and copied incident records as sensitive source/configuration data; store them only in the approved private incident location.
 
 ## Recovery procedure
 
@@ -35,7 +35,7 @@ The inspection output includes bounded before-image file contents from the priva
      --inspect
    ```
 
-4. Record the returned `owner.token`, `owner.pid`, `owner.hostname`, `owner.bootId`, `owner.pidNamespace`, `owner.processStartIdentity`, `owner.operationId`, and `owner.tenantId`. The command also displays the matching `pendingIntent` and any terminal `receipt`. Confirm the service is stopped. The command itself independently checks the host, boot ID, PID, and process start identity; a live or uncertain owner is not recoverable.
+4. First inspect `classification.state` and `classification.reason`. For `locked` or `recovery_required` with a valid owner, record `owner.token`, `owner.pid`, `owner.hostname`, `owner.bootId`, `owner.pidNamespace`, `owner.processStartIdentity`, `owner.operationId`, and `owner.tenantId`. The command also displays the matching `pendingIntent` and any terminal `receipt`. Confirm the service is stopped. The command independently checks the host, boot ID, PID, and process start identity; a live or uncertain owner is not recoverable. If `owner` is null because metadata is missing or incomplete, do not attempt the token-based recovery command: preserve the lock and evidence for a separately reviewed recovery procedure.
 5. Only after confirming the affected operation and stopping its service, run the explicit recovery command. Replace the values with the exact inspected token and an accountable operator/reason:
 
    ```bash
@@ -57,7 +57,8 @@ The inspection output includes bounded before-image file contents from the priva
 
 - `PROJECT_WORKSPACE_LOCK_OWNER_ACTIVE`: the recorded process is still present. Stop it normally and retry inspection; do not force recovery.
 - `PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN`: host/boot identity differs or process state cannot be proven. Preserve evidence and use a controlled manual incident process on the original host; do not remove the lock.
-- `PROJECT_WORKSPACE_LOCK_CORRUPT`: owner metadata is missing, malformed, unsafe, or incomplete. Preserve the lock and workspace; recovery requires manual evidence review.
+- `recovery_required / owner_metadata_missing` or `recovery_required / owner_metadata_incomplete`: the lock directory exists but owner metadata was not durably initialized. The lock remains active and blocks writers; because no trustworthy owner token exists, do not use the token-based recovery command. Preserve the lock and workspace for manual evidence review and the dedicated incomplete-lock recovery procedure.
+- `PROJECT_WORKSPACE_LOCK_CORRUPT`: owner metadata is malformed, symlinked, or has unsafe permissions. Preserve the lock and workspace; recovery requires manual evidence review.
 - `PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM`: this platform/filesystem does not provide the required proof. Keep writes disabled until a supported recovery path is provided.
 
 There is deliberately no TTL-based auto-unlock, no automatic PID-only cleanup, and no command that recursively deletes lock or quarantine directories.

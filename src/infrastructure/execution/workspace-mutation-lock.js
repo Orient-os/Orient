@@ -264,9 +264,6 @@ class WorkspaceMutationLock {
       // that the original process no longer owns this lock.
     }
 
-    const quarantinePath = this.lockPath + '.quarantine.' + crypto.randomUUID();
-    fs.renameSync(this.lockPath, quarantinePath);
-    syncDirectory(this.lockDirectory);
     const recovery = {
       version: 1,
       operatorId: operatorId.trim(),
@@ -274,15 +271,62 @@ class WorkspaceMutationLock {
       recoveredAt: new Date().toISOString(),
       owner
     };
-    const recoveryPath = path.join(quarantinePath, 'recovery.json');
-    const descriptor = fs.openSync(recoveryPath, 'wx', 0o600);
+    const recoveryPath = path.join(this.lockPath, 'recovery.json');
+    let recoveryDescriptor;
     try {
-      fs.writeFileSync(descriptor, JSON.stringify(recovery, null, 2) + '\n', 'utf8');
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
+      recoveryDescriptor = fs.openSync(
+        recoveryPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+        0o600
+      );
+      fs.writeFileSync(recoveryDescriptor, JSON.stringify(recovery, null, 2) + '\n', 'utf8');
+      fs.fsyncSync(recoveryDescriptor);
+      fs.closeSync(recoveryDescriptor);
+      recoveryDescriptor = undefined;
+    } catch (error) {
+      if (recoveryDescriptor !== undefined) {
+        try { fs.closeSync(recoveryDescriptor); } catch {}
+      }
+      if (error.code !== 'EEXIST') throw error;
+
+      // A previous recovery attempt may have durably staged this exact record
+      // before crashing prior to the directory rename. Resume only the same
+      // operator decision; never replace or discard staged evidence.
+      let existingDescriptor;
+      try {
+        existingDescriptor = fs.openSync(recoveryPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const stats = fs.fstatSync(existingDescriptor);
+        if (!stats.isFile() || stats.nlink !== 1 || stats.size > 8192 ||
+            (typeof process.getuid === 'function' &&
+              (stats.uid !== process.getuid() || (stats.mode & 0o7777) !== 0o600))) {
+          fail('Staged workspace recovery record is unsafe', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+        }
+        const existing = JSON.parse(fs.readFileSync(existingDescriptor, 'utf8'));
+        if (existing?.version !== 1 ||
+            existing?.owner?.token !== owner.token ||
+            existing?.operatorId !== operatorId.trim() ||
+            existing?.reason !== reason.trim()) {
+          fail('A different workspace recovery decision is already staged', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+      } catch (readError) {
+        if (readError.code === 'ELOOP') {
+          fail('Staged workspace recovery record must not be a symbolic link', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+        }
+        if (readError instanceof SyntaxError) {
+          fail('Staged workspace recovery record is corrupt', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+        }
+        throw readError;
+      } finally {
+        if (existingDescriptor !== undefined) fs.closeSync(existingDescriptor);
+      }
     }
-    syncDirectory(quarantinePath);
+    syncDirectory(this.lockPath);
+
+    // The durable operator record is written while the active lock path still
+    // exists. The atomic rename is the final step, so a crash cannot expose an
+    // unlocked workspace before its recovery evidence is durable.
+    const quarantinePath = this.lockPath + '.quarantine.' + crypto.randomUUID();
+    fs.renameSync(this.lockPath, quarantinePath);
     syncDirectory(this.lockDirectory);
     return { recovered: true, quarantinePath, recovery };
   }

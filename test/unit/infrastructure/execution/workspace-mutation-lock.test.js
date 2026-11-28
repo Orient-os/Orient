@@ -216,6 +216,10 @@ test('recovery refuses an owner recorded in a different PID namespace', async ()
     await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
 
     assert.throws(
+      () => lock.classify(),
+      { code: 'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN' }
+    );
+    assert.throws(
       () => lock.recover({
         expectedToken: first.metadata.token,
         operatorId: 'test-operator',

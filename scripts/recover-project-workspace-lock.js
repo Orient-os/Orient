@@ -33,7 +33,19 @@ function readPendingIntent(owner, lockDirectory) {
 function readReceipt(owner, lockDirectory) {
   if (!owner?.operationId || !owner?.tenantId) return null;
   const store = new ProjectOperationReceiptStore({ directory: path.dirname(lockDirectory) });
-  return store.read({ operationId: owner.operationId, tenantId: owner.tenantId });
+  const receipt = store.read({ operationId: owner.operationId, tenantId: owner.tenantId });
+  if (!receipt) return null;
+  return {
+    outcome: receipt.outcome || 'verified',
+    recordedAt: receipt.recordedAt,
+    operationId: receipt.operationId,
+    tenantId: receipt.tenantId,
+    workspaceId: receipt.workspaceId,
+    changeSetHash: receipt.changeSetHash,
+    resultStatus: receipt.result.status,
+    verificationStatus: receipt.result.verification?.status || null,
+    rolledBack: receipt.result.rollback?.rolledBack === true
+  };
 }
 
 function required(values, name) {

@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const ProjectOperationReceiptStore = require('../../src/infrastructure/execution/project-operation-receipt-store');
+const WorkspaceMutationLock = require('../../src/infrastructure/execution/workspace-mutation-lock');
 const { spawn } = require('node:child_process');
 
 function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 'contender' }) {
@@ -48,6 +49,15 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
                 contentSha256: proposal.expectedContentSha256
               }]
             }
+          };
+          return { ...result, toJSON: () => result };
+        };
+      } else if (mode === 'rollback-failed') {
+        ProjectBuilderAgent.prototype.execute = async function (options) {
+          await options.beforeExecution();
+          const result = {
+            status: 'rollback-failed',
+            rollback: { rolledBack: false, rollbackErrors: [{ code: 'WORKSPACE_ROLLBACK_CONFLICT' }] }
           };
           return { ...result, toJSON: () => result };
         };
@@ -130,6 +140,46 @@ test('canonical project tool receipts and reconciles a safely rolled-back operat
     assert.equal(outcome.reconciliation.status, 'completed');
     assert.equal(outcome.reconciliation.result.status, 'failed');
     await waitForExit(worker);
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test('unreceipted rollback failure retains the workspace lock until explicit recovery', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-project-rollback-failed-'));
+  const root = path.join(base, 'workspace');
+  const receiptDirectory = path.join(base, 'agent-data', 'project-operation-receipts');
+  const lockDirectory = path.join(receiptDirectory, 'workspace-locks');
+  await fs.mkdir(root);
+  await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(root, 'target.txt'), 'before');
+  let worker;
+  try {
+    worker = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-rollback-failed', mode: 'rollback-failed' });
+    const outcome = JSON.parse(await nextLine(worker));
+    assert.equal(outcome.result.status, 'rollback-failed');
+    await waitForExit(worker);
+
+    const lock = new WorkspaceMutationLock({ workspaceRoot: root, lockDirectory });
+    const owner = lock.inspect();
+    assert.ok(owner);
+    await assert.rejects(
+      () => lock.acquire(),
+      { code: 'PROJECT_WORKSPACE_MUTATION_LOCKED' }
+    );
+    const recovered = lock.recover({
+      expectedToken: owner.token,
+      operatorId: 'test-operator',
+      reason: 'child process exited after an unreceipted rollback failure'
+    });
+    assert.equal(recovered.recovered, true);
+
+    const store = new ProjectOperationReceiptStore({ directory: receiptDirectory });
+    assert.ok(store.readIntent({
+      operationId: 'operation-rollback-failed',
+      tenantId: 'tenant-lock-test'
+    }));
   } finally {
     if (worker && worker.exitCode === null) worker.kill('SIGKILL');
     await fs.rm(base, { recursive: true, force: true });

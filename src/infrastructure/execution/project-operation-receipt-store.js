@@ -398,7 +398,7 @@ class ProjectOperationReceiptStore {
     return receipt;
   }
 
-  write({ operationId, tenantId, workspaceId, changeSetHash, result }) {
+  write({ operationId, tenantId, workspaceId, changeSetHash, result, requireIntentJournal = false }) {
     const verifiedOutcome = validVerifiedOutcome(result);
     const rolledBackOutcome = validRollbackOutcome(result);
     if (!validIdentity({ operationId, tenantId }) ||
@@ -410,19 +410,24 @@ class ProjectOperationReceiptStore {
 
     this.ensureDirectory();
     const intent = this.readIntent({ operationId, tenantId });
-    if (!intent) {
-      fail('A durable pending intent is required before committing a project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_MISSING');
-    }
-    if (intent.workspaceId !== workspaceId || intent.changeSetHash !== changeSetHash) {
+    if (intent && (intent.workspaceId !== workspaceId || intent.changeSetHash !== changeSetHash)) {
       fail('Project receipt identity does not match its pending intent', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
     }
-    if (intent.version !== 2 || !validIntentChanges(intent.changes)) {
-      fail('A complete before-image journal is required before committing a project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
+    const hasCompleteJournal = Boolean(intent?.version === 2 && validIntentChanges(intent.changes));
+    if (requireIntentJournal && !hasCompleteJournal) {
+      fail('A complete durable before-image journal is required before committing this project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
     }
-    if ((verifiedOutcome && !matchesVerifiedJournal(result, intent.changes)) ||
-        (rolledBackOutcome && !matchesRollbackJournal(result, intent.changes))) {
+    if (rolledBackOutcome && !hasCompleteJournal) {
+      fail('A safely rolled-back receipt requires a complete before-image journal', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
+    }
+    if (hasCompleteJournal &&
+        ((verifiedOutcome && !matchesVerifiedJournal(result, intent.changes)) ||
+          (rolledBackOutcome && !matchesRollbackJournal(result, intent.changes))) ) {
       fail('Project operation result does not match its durable before-image journal', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
     }
+    const receiptOutcome = hasCompleteJournal
+      ? (verifiedOutcome ? 'verified' : 'rolled_back')
+      : undefined;
     const filePath = this.receiptPath(operationId, tenantId);
     const lockPath = filePath + '.lock';
     const token = crypto.randomUUID();
@@ -465,12 +470,15 @@ class ProjectOperationReceiptStore {
         if (existing.workspaceId !== workspaceId || existing.changeSetHash !== changeSetHash) {
           fail('Operation ID is already bound to a different tenant-scoped project change', 'PROJECT_OPERATION_RECEIPT_IDENTITY_CONFLICT');
         }
+        if (requireIntentJournal && !existing.outcome) {
+          fail('Existing project receipt predates the durable before-image journal', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
+        }
         return existing;
       }
 
       const receipt = {
         version: 1,
-        outcome: verifiedOutcome ? 'verified' : 'rolled_back',
+        ...(receiptOutcome ? { outcome: receiptOutcome } : {}),
         operationId,
         tenantId,
         workspaceId,

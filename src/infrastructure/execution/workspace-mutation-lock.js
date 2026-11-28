@@ -264,7 +264,7 @@ class WorkspaceMutationLock {
       // that the original process no longer owns this lock.
     }
 
-    const recovery = {
+    let recovery = {
       version: 1,
       operatorId: operatorId.trim(),
       reason: reason.trim(),
@@ -308,6 +308,7 @@ class WorkspaceMutationLock {
             existing?.reason !== reason.trim()) {
           fail('A different workspace recovery decision is already staged', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
         }
+        recovery = existing;
       } catch (readError) {
         if (readError.code === 'ELOOP') {
           fail('Staged workspace recovery record must not be a symbolic link', 'PROJECT_WORKSPACE_LOCK_CORRUPT');

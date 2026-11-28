@@ -6,6 +6,33 @@ const crypto = require('node:crypto');
 const ProjectModifier = require('../../../../../src/core/agent/project-builder/modification/project-modifier');
 const BuildExecutionService = require('../../../../../src/core/agent/project-builder/execution/build-execution-service');
 
+test('modifier revalidates the exact snapshot immediately before creating the durable intent', async () => {
+  let reads = 0;
+  let writes = 0;
+  const workspace = {
+    exists: async () => true,
+    readText: async () => {
+      reads += 1;
+      return reads === 1 ? 'before' : 'external-change-before-snapshot';
+    },
+    writeText: async () => { writes += 1; },
+    removeFile: async () => {}
+  };
+  const modifier = new ProjectModifier({ workspace });
+  await assert.rejects(
+    () => modifier.apply({
+      changes: [{
+        action: 'update',
+        path: 'config.json',
+        content: 'after',
+        expectedContentSha256: crypto.createHash('sha256').update('before').digest('hex')
+      }]
+    }),
+    { code: 'CHANGE_PRECONDITION_FAILED' }
+  );
+  assert.equal(writes, 0);
+});
+
 test('verification rollback refuses to overwrite an external change made after ORIENT applied its after-image', async () => {
   const files = new Map([['config.json', 'before']]);
   const workspace = {

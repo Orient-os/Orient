@@ -80,8 +80,8 @@ function validRollbackOutcome(result) {
 
 function matchesRollbackJournal(result, changes) {
   const restored = result?.rollback?.restored;
-  return Array.isArray(changes) && Array.isArray(restored) &&
-    restored.length === changes.length &&
+  return matchesVerifiedJournal(result, changes) &&
+    Array.isArray(restored) && restored.length === changes.length &&
     changes.every((change, index) => {
       const item = restored[index];
       return item?.path === change.path &&

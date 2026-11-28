@@ -83,18 +83,16 @@ test('independent OS processes cannot own the same workspace mutation lock concu
   }
 });
 
-test('release atomically retires the lock while preserving owner evidence', async () => {
+test('release atomically removes the active lock without retaining one tombstone per mutation', async () => {
   const f = await fixture();
   try {
     const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
     const lease = await lock.acquire();
-    const retiredPath = lock.lockPath + '.released.' + lease.metadata.token;
 
     await lease.release();
 
     await assert.rejects(fs.stat(lock.lockPath), { code: 'ENOENT' });
-    const retiredOwner = JSON.parse(await fs.readFile(path.join(retiredPath, 'owner.json'), 'utf8'));
-    assert.equal(retiredOwner.token, lease.metadata.token);
+    assert.deepEqual(await fs.readdir(f.lockDirectory), []);
     const nextLease = await lock.acquire();
     await nextLease.release();
   } finally {

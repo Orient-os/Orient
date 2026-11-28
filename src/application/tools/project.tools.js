@@ -97,6 +97,11 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       let retainWorkspaceLock = false;
       let intentCreated = false;
       try {
+      if (fs.realpathSync.native(path.resolve(projectRoot)) !== mutationLock.workspaceRoot) {
+        const error = new Error('Project workspace identity changed while acquiring its mutation lock');
+        error.code = 'PROJECT_WORKSPACE_IDENTITY_CHANGED';
+        throw error;
+      }
       const workspaceId = mutationLock.workspaceId;
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})

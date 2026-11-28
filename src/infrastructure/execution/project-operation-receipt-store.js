@@ -78,6 +78,31 @@ function validRollbackOutcome(result) {
   });
 }
 
+function matchesRollbackJournal(result, changes) {
+  const restored = result?.rollback?.restored;
+  return Array.isArray(changes) && Array.isArray(restored) &&
+    restored.length === changes.length &&
+    changes.every((change, index) => {
+      const item = restored[index];
+      return item?.path === change.path &&
+        item.existed === change.beforeExists &&
+        item.contentSha256 === change.beforeContentSha256;
+    });
+}
+
+function matchesVerifiedJournal(result, changes) {
+  const applied = result?.changeSet?.changes;
+  return Array.isArray(changes) && Array.isArray(applied) &&
+    applied.length === changes.length &&
+    changes.every((change, index) => {
+      const item = applied[index];
+      return item?.action === change.action &&
+        item.path === change.path &&
+        typeof item.content === 'string' &&
+        digest(item.content) === change.afterContentSha256;
+    });
+}
+
 function validVerifiedOutcome(result) {
   return Boolean(result && result.status === 'verified' &&
     result.verification?.status === 'passed' &&
@@ -354,6 +379,19 @@ class ProjectOperationReceiptStore {
       fail('Project operation receipt schema or identity is invalid', 'PROJECT_OPERATION_RECEIPT_CORRUPT');
     }
 
+    if (receipt.outcome === 'verified' || receipt.outcome === 'rolled_back') {
+      const intent = this.readIntent({ operationId, tenantId });
+      const journalMatches = intent?.version === 2 &&
+        intent.workspaceId === receipt.workspaceId &&
+        intent.changeSetHash === receipt.changeSetHash &&
+        (receipt.outcome === 'verified'
+          ? matchesVerifiedJournal(receipt.result, intent.changes)
+          : matchesRollbackJournal(receipt.result, intent.changes));
+      if (!journalMatches) {
+        fail('Project operation receipt does not match its durable before-image journal', 'PROJECT_OPERATION_RECEIPT_CORRUPT');
+      }
+    }
+
     return receipt;
   }
 
@@ -377,6 +415,10 @@ class ProjectOperationReceiptStore {
     }
     if (intent.version !== 2 || !validIntentChanges(intent.changes)) {
       fail('A complete before-image journal is required before committing a project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
+    }
+    if ((verifiedOutcome && !matchesVerifiedJournal(result, intent.changes)) ||
+        (rolledBackOutcome && !matchesRollbackJournal(result, intent.changes))) {
+      fail('Project operation result does not match its durable before-image journal', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
     }
     const filePath = this.receiptPath(operationId, tenantId);
     const lockPath = filePath + '.lock';

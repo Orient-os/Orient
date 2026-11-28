@@ -81,7 +81,7 @@ function readAt(parent, relativePath) {
 
   try {
     const before = fs.fstatSync(fd);
-    if (!before.isFile() || before.nlink !== 1 || before.size > MAX_FILE_BYTES ||
+    if (!before.isFile() || before.nlink !== 1 || before.size > MAX_FILE_BYTES || (before.mode & 0o7000) !== 0 ||
         (typeof process.getuid === 'function' && before.uid !== process.getuid())) {
       fail('Recovery target must be an owned, bounded, single-link regular file: ' + relativePath,
         'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
@@ -163,7 +163,13 @@ class ProjectWorkspaceRecovery {
   restoreAt(parent, change, ownerToken) {
     const relativePath = change.path;
     const current = readAt(parent, relativePath);
-    if (sameBefore(current, change)) return;
+    if (sameBefore(current, change)) {
+      // A previous interrupted recovery may have changed the directory but
+      // crashed before its durability barrier. Re-sync before accepting the
+      // before-image as a completed recovery step.
+      fs.fsyncSync(parent.fd);
+      return;
+    }
     if (!sameAfter(current, change)) {
       fail('Recovery conflict: current file matches neither before-image nor operation after-image: ' + relativePath,
         'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
@@ -221,13 +227,27 @@ class ProjectWorkspaceRecovery {
   verify(changes, expected) {
     for (const change of changes) {
       this.assertClaim();
-      const state = this.readState(change.path);
-      const matches = expected === 'before'
-        ? sameBefore(state, change)
-        : sameAfter(state, change);
-      if (!matches) {
-        fail('Recovery verification failed for workspace path: ' + change.path,
-          'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      let parent;
+      try {
+        parent = openParent(this.workspaceRoot, change.path);
+      } catch (error) {
+        if (error.code === 'ENOENT' && expected === 'before' && !change.beforeExists) continue;
+        throw error;
+      }
+      try {
+        const state = readAt(parent, change.path);
+        const matches = expected === 'before'
+          ? sameBefore(state, change)
+          : sameAfter(state, change);
+        if (!matches) {
+          fail('Recovery verification failed for workspace path: ' + change.path,
+            'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+        // This is recovery-only: make the verified directory entry durable
+        // before a rollback receipt or lock release can become authoritative.
+        fs.fsyncSync(parent.fd);
+      } finally {
+        fs.closeSync(parent.fd);
       }
     }
   }

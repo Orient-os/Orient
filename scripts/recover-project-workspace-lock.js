@@ -30,6 +30,12 @@ function readPendingIntent(owner, lockDirectory) {
   return store.readIntent({ operationId: owner.operationId, tenantId: owner.tenantId });
 }
 
+function readReceipt(owner, lockDirectory) {
+  if (!owner?.operationId || !owner?.tenantId) return null;
+  const store = new ProjectOperationReceiptStore({ directory: path.dirname(lockDirectory) });
+  return store.read({ operationId: owner.operationId, tenantId: owner.tenantId });
+}
+
 function required(values, name) {
   const value = values.get(name);
   if (!value || !value.trim()) throw new Error(name + ' is required');
@@ -47,16 +53,25 @@ async function main() {
     const owner = lock.inspect();
     let pendingIntent = null;
     let pendingIntentError = null;
+    let receipt = null;
+    let receiptError = null;
     try {
       pendingIntent = readPendingIntent(owner, lockDirectory);
     } catch (error) {
       pendingIntentError = { code: error.code || null, message: error.message };
     }
+    try {
+      receipt = readReceipt(owner, lockDirectory);
+    } catch (error) {
+      receiptError = { code: error.code || null, message: error.message };
+    }
     process.stdout.write(JSON.stringify({
       locked: Boolean(owner),
       owner,
       pendingIntent,
-      pendingIntentError
+      pendingIntentError,
+      receipt,
+      receiptError
     }, null, 2) + '\n');
     return;
   }
@@ -73,6 +88,11 @@ async function main() {
     result.pendingIntent = readPendingIntent(result.recovery.owner, lockDirectory);
   } catch (error) {
     result.pendingIntentError = { code: error.code || null, message: error.message };
+  }
+  try {
+    result.receipt = readReceipt(result.recovery.owner, lockDirectory);
+  } catch (error) {
+    result.receiptError = { code: error.code || null, message: error.message };
   }
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }

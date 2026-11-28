@@ -79,7 +79,7 @@ async function main() {
       receiptError = { code: error.code || null, message: error.message };
     }
     process.stdout.write(JSON.stringify({
-      locked: classification.state === 'locked',
+      locked: classification.state !== 'unlocked',
       classification,
       owner,
       pendingIntent,

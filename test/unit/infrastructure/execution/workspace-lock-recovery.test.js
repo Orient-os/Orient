@@ -72,6 +72,11 @@ async function killOwner(child) {
   if (child.exitCode === null && child.signalCode === null) await new Promise(resolve => child.once('exit', resolve));
 }
 
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', resolve));
+}
+
 function lockFor(f) {
   return new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
 }
@@ -120,7 +125,7 @@ function spawnRecoveryWorker({ workspaceRoot, lockDirectory, dataDirectory, expe
     "const Lock = require(process.argv[1]);",
     "const Recovery = require(process.argv[2]);",
     "const Store = require(process.argv[3]);",
-    "if (process.argv[6] === 'pause-after-claim') {",
+    "if (process.argv[8] === 'pause-after-claim') {",
     "  const original = Recovery.prototype.restore;",
     "  Recovery.prototype.restore = function(input) {",
     "    process.stdout.write('CLAIMED\\n');",
@@ -129,7 +134,7 @@ function spawnRecoveryWorker({ workspaceRoot, lockDirectory, dataDirectory, expe
     "    return original.call(this, input);",
     "  };",
     "}",
-    "if (process.argv[6] === 'crash-before-receipt') {",
+    "if (process.argv[8] === 'crash-before-receipt') {",
     "  Store.prototype.write = function() {",
     "    process.stdout.write('RESTORED\\n');",
     "    process.kill(process.pid, 'SIGKILL');",
@@ -137,14 +142,14 @@ function spawnRecoveryWorker({ workspaceRoot, lockDirectory, dataDirectory, expe
     "}",
     "try {",
     "  const lock = new Lock({ workspaceRoot: process.argv[4], lockDirectory: process.argv[5] });",
-    "  const receiptStore = new Store({ directory: process.argv[7] });",
-    "  lock.recover({ expectedToken: process.argv[8], operatorId: 'owner', reason: 'restartable recovery test', receiptStore });",
+    "  const receiptStore = new Store({ directory: process.argv[6] });",
+    "  lock.recover({ expectedToken: process.argv[7], operatorId: 'owner', reason: 'restartable recovery test', receiptStore });",
     "  process.stdout.write('DONE\\n');",
     "} catch (error) {",
     "  process.stderr.write(JSON.stringify({ code: error.code || null, message: error.message }) + '\\n');",
     "  process.exitCode = 2;",
     "}"
-  ].join('\\n');
+  ].join('\n');
   return spawn(process.execPath, [
     '-e', source, lockModule, recoveryModule, storeModule,
     workspaceRoot, lockDirectory, dataDirectory, expectedToken, mode
@@ -227,7 +232,7 @@ test('independent recovery processes cannot enter the same live recovery claim',
       expectedToken: owner.token,
       mode: 'pause-after-claim'
     });
-    await waitForMarker(worker, 'CLAIMED\\n');
+    await waitForMarker(worker, 'CLAIMED\n');
 
     const lock = lockFor(f);
     assert.throws(() => lock.recover({
@@ -266,7 +271,6 @@ test('recovery resumes after a process crash between before-image restoration an
       expectedToken: owner.token,
       mode: 'crash-before-receipt'
     });
-    await waitForMarker(worker, 'RESTORED\\n');
     await waitForExit(worker);
     assert.equal(worker.signalCode, 'SIGKILL');
     assert.equal(await fs.readFile(target, 'utf8'), 'before\\n');

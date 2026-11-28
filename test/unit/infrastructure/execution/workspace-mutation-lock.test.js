@@ -274,3 +274,29 @@ test('release refuses to remove a lock whose ownership token changed', async () 
     await fs.rm(f.root, { recursive: true, force: true });
   }
 });
+
+
+test('inspection classifies a lock directory without owner.json as recovery_required after an early crash', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+
+    const inspection = lock.inspect();
+
+    assert.equal(inspection.state, 'recovery_required');
+    assert.equal(inspection.reason, 'owner_metadata_missing');
+    assert.equal(inspection.owner, null);
+    assert.equal(inspection.recoveryRequired, true);
+
+    const contender = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const result = await readFirstLine(contender);
+    assert.equal(result.acquired, false);
+    assert.equal(result.code, 'PROJECT_WORKSPACE_MUTATION_LOCKED');
+    await waitForExit(contender);
+    assert.equal((await fs.stat(lock.lockPath)).isDirectory(), true,
+      'ownerless lock evidence must remain in place; inspection must not unlock it');
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});

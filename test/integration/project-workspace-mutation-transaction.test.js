@@ -197,14 +197,19 @@ test('unreceipted rollback failure retains the workspace lock until explicit rec
       () => lock.acquire(),
       { code: 'PROJECT_WORKSPACE_MUTATION_LOCKED' }
     );
+    const store = new ProjectOperationReceiptStore({ directory: receiptDirectory });
     const recovered = lock.recover({
       expectedToken: owner.token,
       operatorId: 'test-operator',
-      reason: 'child process exited after an unreceipted rollback failure'
+      reason: 'child process exited after an unreceipted rollback failure',
+      receiptStore: store
     });
     assert.equal(recovered.recovered, true);
-
-    const store = new ProjectOperationReceiptStore({ directory: receiptDirectory });
+    assert.equal(recovered.outcome, 'rolled_back');
+    assert.equal(store.read({
+      operationId: 'operation-rollback-failed',
+      tenantId: 'tenant-lock-test'
+    }).outcome, 'rolled_back');
     assert.ok(store.readIntent({
       operationId: 'operation-rollback-failed',
       tenantId: 'tenant-lock-test'

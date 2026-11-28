@@ -375,6 +375,9 @@ class ProjectOperationReceiptStore {
     if (intent.workspaceId !== workspaceId || intent.changeSetHash !== changeSetHash) {
       fail('Project receipt identity does not match its pending intent', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
     }
+    if (intent.version !== 2 || !validIntentChanges(intent.changes)) {
+      fail('A complete before-image journal is required before committing a project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
+    }
     const filePath = this.receiptPath(operationId, tenantId);
     const lockPath = filePath + '.lock';
     const token = crypto.randomUUID();

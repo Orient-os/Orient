@@ -148,7 +148,7 @@ function readOwner(lockPath, { allowIncomplete = false } = {}) {
         typeof owner.bootId !== 'string' || !owner.bootId ||
         typeof owner.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(owner.pidNamespace) ||
         !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
-        typeof owner.processStartIdentity !== 'string' || !/^\\d+$/.test(owner.processStartIdentity) ||
+        typeof owner.processStartIdentity !== 'string' || !/^\d+$/.test(owner.processStartIdentity) ||
         ((owner.operationId === undefined) !== (owner.tenantId === undefined)) ||
         (owner.operationId !== undefined &&
           (typeof owner.operationId !== 'string' || !owner.operationId || owner.operationId.length > 256 ||
@@ -243,7 +243,7 @@ function validateRecoveryClaim(claim, parentToken, workspaceId) {
       typeof claim.process.pidNamespace !== 'string' ||
       !/^pid:\[\d+\]$/.test(claim.process.pidNamespace) ||
       !Number.isSafeInteger(claim.process.pid) || claim.process.pid < 1 ||
-      typeof claim.process.processStartIdentity !== 'string' || !/^\\d+$/.test(claim.process.processStartIdentity)) {
+      typeof claim.process.processStartIdentity !== 'string' || !/^\d+$/.test(claim.process.processStartIdentity)) {
     fail('Workspace recovery claim is malformed or belongs to another operation',
       'PROJECT_WORKSPACE_LOCK_CORRUPT');
   }

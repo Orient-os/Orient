@@ -135,7 +135,6 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
           }
           const error = new Error('A prior project operation has no terminal receipt; its outcome is unknown');
           error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
-          error.intent = pendingIntent;
           throw error;
         }
       }
@@ -205,7 +204,6 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
           if (!reservation.created) {
             const error = new Error('A prior project operation has no verified receipt; outcome is unknown');
             error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
-            error.intent = reservation.intent;
             throw error;
           }
         }
@@ -258,7 +256,25 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
               if (pendingIntent.workspaceId !== workspaceId || pendingIntent.changeSetHash !== changeSetHash) {
                 return { status: 'conflict', reason: 'operation_intent_identity_conflict' };
               }
-              return { status: 'conflict', reason: 'operation_outcome_unknown', intent: pendingIntent };
+              return {
+                status: 'conflict',
+                reason: 'operation_outcome_unknown',
+                intent: {
+                  version: pendingIntent.version,
+                  status: pendingIntent.status,
+                  operationId: pendingIntent.operationId,
+                  tenantId: pendingIntent.tenantId,
+                  workspaceId: pendingIntent.workspaceId,
+                  changeSetHash: pendingIntent.changeSetHash,
+                  changes: Array.isArray(pendingIntent.changes) ? pendingIntent.changes.map(change => ({
+                    action: change.action,
+                    path: change.path,
+                    beforeExists: change.beforeExists,
+                    beforeContentSha256: change.beforeContentSha256,
+                    afterContentSha256: change.afterContentSha256
+                  })) : null
+                }
+              };
             }
           }
         } catch (error) {

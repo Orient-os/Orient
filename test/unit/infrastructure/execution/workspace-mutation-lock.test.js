@@ -26,14 +26,14 @@ function spawnLockWorker({ workspaceRoot, lockDirectory, hold = false }) {
     (async () => {
       const lock = new Lock({ workspaceRoot: process.argv[2], lockDirectory: process.argv[3] });
       const lease = await lock.acquire();
-      process.stdout.write(JSON.stringify({ acquired: true, metadata: lease.metadata }) + '\\n');
+      process.stdout.write(JSON.stringify({ acquired: true, metadata: lease.metadata }) + '\n');
       if (process.argv[4] === 'hold') {
         process.stdin.resume();
       } else {
         await lease.release();
       }
     })().catch(error => {
-      process.stdout.write(JSON.stringify({ acquired: false, code: error.code || null, message: error.message }) + '\\n');
+      process.stdout.write(JSON.stringify({ acquired: false, code: error.code || null, message: error.message }) + '\n');
       process.exitCode = 2;
     });
   `;
@@ -268,7 +268,7 @@ test('a staged recovery decision cannot release a lock without its durable befor
       recoveredAt: '2026-11-28T00:00:00.000Z',
       owner: first.metadata
     };
-    await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\\n', { mode: 0o600 });
+    await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\n', { mode: 0o600 });
     const receiptStore = new ProjectOperationReceiptStore({ directory: path.join(f.root, 'receipts') });
 
     assert.throws(() => lock.recover({

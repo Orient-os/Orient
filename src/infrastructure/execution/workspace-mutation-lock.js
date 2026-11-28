@@ -256,8 +256,19 @@ class WorkspaceMutationLock {
         // attributed or recovered. The tombstone preserves the owner evidence.
         const retiredPath = this.lockPath + '.released.' + token;
         fs.renameSync(this.lockPath, retiredPath);
+        // The rename is the release commit point. Once its parent directory is
+        // synced, the active lock is durably absent. Remove the retired metadata
+        // afterward to avoid one permanent tombstone per successful mutation.
         syncDirectory(this.lockDirectory);
         released = true;
+        try {
+          fs.unlinkSync(path.join(retiredPath, 'owner.json'));
+          fs.rmdirSync(retiredPath);
+          syncDirectory(this.lockDirectory);
+        } catch {
+          // A leftover .released directory is inert evidence, never an active
+          // lock. Cleanup failure must not recreate or weaken the release.
+        }
       }
     };
   }

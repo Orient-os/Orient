@@ -10,8 +10,8 @@ const CommandRunner = require('../../core/agent/project-builder/workspace/comman
 const CommandVerification = require('../../core/agent/project-builder/verification/command-verification');
 
 const MAX_PROJECT_CHANGES = 10;
-const MAX_PROJECT_CHANGE_BYTES = 32 * 1024;
-const MAX_PROJECT_CHANGE_SET_BYTES = 256 * 1024;
+const MAX_PROJECT_CHANGE_BYTES = 256 * 1024;
+const MAX_PROJECT_CHANGE_SET_BYTES = 1024 * 1024;
 
 function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = null } = {}) {
   if (!projectRoot || typeof projectRoot !== 'string') throw new TypeError('projectRoot is required');

@@ -19,7 +19,7 @@ const MAX_INTENT_BYTES = 2 * 1024 * 1024;
 const MAX_INTENT_CHANGES = 10;
 const MAX_INTENT_BEFORE_BYTES = 1024 * 1024;
 const MAX_INTENT_BEFORE_FILE_BYTES = 256 * 1024;
-const MAX_RECEIPT_BYTES = 2 * 1024 * 1024;
+const MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
 
 function readBoundedFile(fd, maxBytes, code, label) {
   const buffer = Buffer.allocUnsafe(maxBytes + 1);

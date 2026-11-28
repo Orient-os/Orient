@@ -72,6 +72,11 @@ async function killOwner(child) {
   if (child.exitCode === null && child.signalCode === null) await new Promise(resolve => child.once('exit', resolve));
 }
 
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', resolve));
+}
+
 function lockFor(f) {
   return new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
 }
@@ -144,7 +149,7 @@ function spawnRecoveryWorker({ workspaceRoot, lockDirectory, dataDirectory, expe
     "  process.stderr.write(JSON.stringify({ code: error.code || null, message: error.message }) + '\\n');",
     "  process.exitCode = 2;",
     "}"
-  ].join('\\n');
+  ].join('\n');
   return spawn(process.execPath, [
     '-e', source, lockModule, recoveryModule, storeModule,
     workspaceRoot, lockDirectory, dataDirectory, expectedToken, mode
@@ -227,7 +232,7 @@ test('independent recovery processes cannot enter the same live recovery claim',
       expectedToken: owner.token,
       mode: 'pause-after-claim'
     });
-    await waitForMarker(worker, 'CLAIMED\\n');
+    await waitForMarker(worker, 'CLAIMED\n');
 
     const lock = lockFor(f);
     assert.throws(() => lock.recover({

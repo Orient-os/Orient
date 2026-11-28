@@ -295,7 +295,7 @@ function acquireRecoveryClaim(lockPath, owner, workspaceId) {
     let fd;
     try {
       fd = fs.openSync(temporaryPath, 'wx', 0o600);
-      fs.writeFileSync(fd, JSON.stringify(claim) + '\\n', 'utf8');
+      fs.writeFileSync(fd, JSON.stringify(claim) + '\n', 'utf8');
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
@@ -380,7 +380,7 @@ function stageRecoveryDecision(lockPath, owner, operatorId, reason) {
   let fd;
   try {
     fd = fs.openSync(temporaryPath, 'wx', 0o600);
-    fs.writeFileSync(fd, JSON.stringify(recovery, null, 2) + '\\n', 'utf8');
+    fs.writeFileSync(fd, JSON.stringify(recovery, null, 2) + '\n', 'utf8');
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;

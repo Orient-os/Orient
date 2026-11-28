@@ -35,7 +35,7 @@ The inspection output includes bounded before-image file contents from the priva
      --inspect
    ```
 
-4. Record the returned `owner.token`, `owner.pid`, `owner.hostname`, `owner.bootId`, `owner.processStartIdentity`, `owner.operationId`, and `owner.tenantId`. The command also displays the matching `pendingIntent` and any terminal `receipt`. Confirm the service is stopped. The command itself independently checks the host, boot ID, PID, and process start identity; a live or uncertain owner is not recoverable.
+4. Record the returned `owner.token`, `owner.pid`, `owner.hostname`, `owner.bootId`, `owner.pidNamespace`, `owner.processStartIdentity`, `owner.operationId`, and `owner.tenantId`. The command also displays the matching `pendingIntent` and any terminal `receipt`. Confirm the service is stopped. The command itself independently checks the host, boot ID, PID, and process start identity; a live or uncertain owner is not recoverable.
 5. Only after confirming the affected operation and stopping its service, run the explicit recovery command. Replace the values with the exact inspected token and an accountable operator/reason:
 
    ```bash

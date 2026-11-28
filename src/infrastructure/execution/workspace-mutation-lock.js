@@ -156,6 +156,14 @@ class WorkspaceMutationLock {
       }
     });
     assertLocalFilesystem(this.lockDirectory);
+    const lockRelativeToWorkspace = path.relative(this.workspaceRoot, this.lockDirectory);
+    const lockIsInsideWorkspace = !lockRelativeToWorkspace ||
+      (lockRelativeToWorkspace !== '..' &&
+        !lockRelativeToWorkspace.startsWith('..' + path.sep) &&
+        !path.isAbsolute(lockRelativeToWorkspace));
+    if (lockIsInsideWorkspace) {
+      fail('Workspace lock storage must be outside the mutable workspace', 'PROJECT_WORKSPACE_LOCK_DIRECTORY_IN_WORKSPACE');
+    }
     this.workspaceId = crypto.createHash('sha256').update(this.workspaceRoot, 'utf8').digest('hex');
     this.lockPath = path.join(this.lockDirectory, this.workspaceId + '.lock');
   }

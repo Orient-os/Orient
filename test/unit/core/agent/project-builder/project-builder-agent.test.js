@@ -1423,23 +1423,20 @@ test(
   'project modifier rolls back a previous change when a later write fails',
   async () => {
     let writes = 0;
+    const files = new Map([['tmp/second.txt', 'original']]);
 
     const workspace = {
-      exists: async (path) =>
-        path === 'tmp/second.txt',
+      exists: async (filePath) => files.has(filePath),
 
-      readText: async () =>
-        'original',
+      readText: async (filePath) => files.get(filePath),
 
-      writeText: async () => {
+      writeText: async (filePath, content) => {
         writes += 1;
-
-        if (writes === 2) {
-          throw new Error('write failed');
-        }
+        if (writes === 2) throw new Error('write failed');
+        files.set(filePath, content);
       },
 
-      removeFile: async () => {}
+      removeFile: async (filePath) => { files.delete(filePath); }
     };
 
     const ProjectModifier =
@@ -1468,7 +1465,9 @@ test(
       /write failed/
     );
 
-    assert.equal(writes, 3);
+    assert.equal(writes, 2, 'the failed second write and unchanged before-image require no redundant restore write');
+    assert.equal(files.has('tmp/first.txt'), false, 'the successful create is rolled back');
+    assert.equal(files.get('tmp/second.txt'), 'original', 'the failed update leaves its before-image intact');
   }
 );
 

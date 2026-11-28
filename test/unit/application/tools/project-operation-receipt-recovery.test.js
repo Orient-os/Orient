@@ -231,7 +231,7 @@ test('receipt persistence failure after a verified mutation remains unreconciled
     assert.ok(recovered.intent, 'pending intent preserves uncertainty after receipt persistence fails');
     await assert.rejects(
       execute.execute(input, context),
-      error => error?.code === 'PROJECT_OPERATION_OUTCOME_UNKNOWN'
+      error => error?.code === 'PROJECT_WORKSPACE_MUTATION_LOCKED'
     );
     assert.equal(
       await fs.readFile(path.join(root, 'src/receipt-write-failure.txt'), 'utf8'),
@@ -1100,4 +1100,25 @@ test('receipt commit ambiguity preserves the primary error across temporary-file
     assert.doesNotThrow(() => store.write(input), 'retry must return the existing receipt');
     assert.equal(fsSync.existsSync(store.receiptPath(input.operationId, input.tenantId) + '.lock'), false);
   });
+});
+
+
+test('project mutation refuses to derive its lock directory from the operating-system temp directory', async () => {
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-project-lock-config-'));
+  fsSync.mkdirSync(path.join(root, 'src'));
+  try {
+    const execute = createProjectTools({
+      projectRoot: root,
+      policy: { allowRead: true, allowWrite: true, allowCommands: false, allowGit: false }
+    }).find(tool => tool.name === 'project.execute_change');
+    await assert.rejects(
+      execute.execute({
+        proposals: [{ action: 'create', path: 'src/must-not-exist.txt', content: 'no implicit temp lock' }]
+      }),
+      error => error?.code === 'PROJECT_WORKSPACE_LOCK_DIRECTORY_REQUIRED'
+    );
+    assert.equal(fsSync.existsSync(path.join(root, 'src/must-not-exist.txt')), false);
+  } finally {
+    fsSync.rmSync(root, { recursive: true, force: true });
+  }
 });

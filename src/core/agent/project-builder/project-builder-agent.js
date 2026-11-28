@@ -203,7 +203,8 @@ class ProjectBuilderAgent {
     plan = null,
     changeSet,
     definitionOfDone,
-    checks = []
+    checks = [],
+    beforeExecution = null
   } = {}) {
     if (
       !changeSet ||
@@ -262,11 +263,16 @@ class ProjectBuilderAgent {
       };
     }
 
+    if (beforeExecution !== null && typeof beforeExecution !== 'function') {
+      throw new TypeError('beforeExecution must be a function when provided');
+    }
+
     return this.executionService.execute({
       plan,
       changeSet,
       definitionOfDone,
-      checks
+      checks,
+      beforeMutation: beforeExecution
     });
   }
 

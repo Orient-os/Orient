@@ -1,10 +1,16 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const fs = require('node:fs');
+const WorkspaceMutationLock = require('../../infrastructure/execution/workspace-mutation-lock');
 const ToolInterface = require('../../core/tools/tool.interface');
 const ProjectBuilderAgent = require('../../core/agent/project-builder/project-builder-agent');
 const ProjectImprovementAnalyzer = require('../../core/agent/project-builder/change-proposal/project-improvement-analyzer');
 const CommandRunner = require('../../core/agent/project-builder/workspace/command-runner');
 const CommandVerification = require('../../core/agent/project-builder/verification/command-verification');
+
+const MAX_PROJECT_CHANGES = 10;
+const MAX_PROJECT_CHANGE_BYTES = 256 * 1024;
+const MAX_PROJECT_CHANGE_SET_BYTES = 512 * 1024;
 
 function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = null } = {}) {
   if (!projectRoot || typeof projectRoot !== 'string') throw new TypeError('projectRoot is required');
@@ -38,9 +44,37 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
     effects: 'local_mutation',
     idempotency: 'reconcilable',
     execute: async (input = {}, context = {}) => {
-      const proposalResult = input && input.proposals ? input : input;
+      const proposalResult = input && typeof input === 'object' ? input : {};
       const proposals = Array.isArray(proposalResult.proposals) ? proposalResult.proposals : [];
       if (proposals.length === 0) throw new Error('No approved change proposals were supplied');
+      if (proposals.length > MAX_PROJECT_CHANGES) {
+        const error = new Error('Project change set exceeds the maximum number of files');
+        error.code = 'PROJECT_CHANGE_SET_TOO_LARGE';
+        throw error;
+      }
+      let totalChangeBytes = 0;
+      for (const proposal of proposals) {
+        if (!proposal || typeof proposal !== 'object' ||
+            typeof proposal.path !== 'string' || proposal.path.length > 512 ||
+            typeof proposal.content !== 'string') {
+          const error = new Error('Project change proposal exceeds the permitted shape');
+          error.code = 'PROJECT_CHANGE_PROPOSAL_INVALID';
+          throw error;
+        }
+        const bytes = Buffer.byteLength(proposal.content, 'utf8');
+        if (bytes > MAX_PROJECT_CHANGE_BYTES) {
+          const error = new Error('Project change content exceeds the per-file limit');
+          error.code = 'PROJECT_CHANGE_CONTENT_TOO_LARGE';
+          throw error;
+        }
+        totalChangeBytes += bytes;
+      }
+      if (totalChangeBytes > MAX_PROJECT_CHANGE_SET_BYTES) {
+        const error = new Error('Project change set exceeds the total content limit');
+        error.code = 'PROJECT_CHANGE_SET_TOO_LARGE';
+        throw error;
+      }
+
       const operationId = typeof context.operationId === 'string' ? context.operationId : '';
       const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
       if (operationReceiptStore && (!operationId || !tenantId)) {
@@ -48,7 +82,29 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         error.code = 'PROJECT_OPERATION_IDENTITY_REQUIRED';
         throw error;
       }
-      const workspaceId = crypto.createHash('sha256').update(path.resolve(projectRoot), 'utf8').digest('hex');
+      if (!operationReceiptStore || typeof operationReceiptStore.directory !== 'string' ||
+          !operationReceiptStore.directory.trim()) {
+        const error = new Error('A private durable operation-receipt directory is required for workspace mutation locks');
+        error.code = 'PROJECT_WORKSPACE_LOCK_DIRECTORY_REQUIRED';
+        throw error;
+      }
+      const lockDirectory = path.join(operationReceiptStore.directory, 'workspace-locks');
+      const mutationLock = new WorkspaceMutationLock({
+        workspaceRoot: projectRoot,
+        lockDirectory,
+        operationId: operationId && tenantId ? operationId : '',
+        tenantId: operationId && tenantId ? tenantId : ''
+      });
+      const workspaceLease = await mutationLock.acquire();
+      let retainWorkspaceLock = false;
+      let intentCreated = false;
+      try {
+      if (fs.realpathSync.native(path.resolve(projectRoot)) !== mutationLock.workspaceRoot) {
+        const error = new Error('Project workspace identity changed while acquiring its mutation lock');
+        error.code = 'PROJECT_WORKSPACE_IDENTITY_CHANGED';
+        throw error;
+      }
+      const workspaceId = mutationLock.workspaceId;
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})
       }))), 'utf8').digest('hex');
@@ -69,6 +125,18 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
           const error = new Error('Previously receipted operation no longer matches the verified workspace state');
           error.code = 'PROJECT_OPERATION_REPLAY_CONFLICT';
           error.reconciliation = recovered;
+          throw error;
+        }
+
+        const pendingIntent = operationReceiptStore.readIntent({ operationId, tenantId });
+        if (pendingIntent) {
+          if (pendingIntent.workspaceId !== workspaceId || pendingIntent.changeSetHash !== changeSetHash) {
+            const error = new Error('Operation identity is already bound to a different pending project change');
+            error.code = 'PROJECT_OPERATION_INTENT_IDENTITY_CONFLICT';
+            throw error;
+          }
+          const error = new Error('A prior project operation has no terminal receipt; its outcome is unknown');
+          error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
           throw error;
         }
       }
@@ -102,42 +170,81 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       const hasTests = canRunNodeTests && await agent.workspace.exists('test');
       if (hasTests) checks.push(commandVerification.createCheck({ id: 'node-test-suite', executable: 'node', args: ['--test'] }));
 
-      // Persist a pending intent immediately before the mutation boundary. If the
-      // process crashes before a verified receipt is durable, retries fail closed.
-      if (operationReceiptStore) {
-        const reservation = operationReceiptStore.beginIntent({
-          operationId, tenantId, workspaceId, changeSetHash
-        });
-        if (!reservation.created) {
-          const error = new Error('A prior project operation has no verified receipt; outcome is unknown');
-          error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
-          error.intent = reservation.intent;
-          throw error;
-        }
-      }
-
       const result = await agent.execute({
         plan: { mission: 'PROJECT_CHANGE_EXECUTION' },
         changeSet: { changes: proposals },
         definitionOfDone: { allProposalsApplied: true, verificationPassed: true, rollbackOnFailure: true },
-        checks
+        checks,
+        // Proposal validation runs while the workspace lock is held. Only then
+        // do we persist the intent immediately before the first possible write.
+        beforeExecution: async ({ snapshots, changes }) => {
+          if (!operationReceiptStore) return;
+          if (!Array.isArray(snapshots) || !Array.isArray(changes) ||
+              snapshots.length !== changes.length || changes.length !== proposals.length) {
+            const error = new Error('Project mutation before-image journal is incomplete');
+            error.code = 'PROJECT_OPERATION_INTENT_INVALID';
+            throw error;
+          }
+          const journalChanges = changes.map((change, index) => {
+            const snapshot = snapshots[index];
+            const beforeContent = snapshot.existed ? snapshot.content : null;
+            return {
+              action: change.action,
+              path: change.path,
+              beforeExists: snapshot.existed,
+              beforeContent,
+              beforeContentSha256: snapshot.existed
+                ? crypto.createHash('sha256').update(beforeContent).digest('hex')
+                : null,
+              afterContentSha256: crypto.createHash('sha256').update(change.content).digest('hex')
+            };
+          });
+          const reservation = operationReceiptStore.beginIntent({
+            operationId, tenantId, workspaceId, changeSetHash, changes: journalChanges
+          });
+          intentCreated = reservation.created;
+          if (!reservation.created) {
+            const error = new Error('A prior project operation has no verified receipt; outcome is unknown');
+            error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
+            throw error;
+          }
+        }
       });
       const serialized = typeof result?.toJSON === 'function' ? result.toJSON() : result;
-      if (operationReceiptStore && serialized?.status === 'verified' &&
-          serialized?.verification?.status === 'passed' && serialized?.verification?.failed === 0) {
-        operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized });
-        // Keep the durable intent as an audit marker. A verified receipt takes
+      const verifiedOutcome = serialized?.status === 'verified' &&
+        serialized?.verification?.status === 'passed' && serialized?.verification?.failed === 0;
+      const rolledBackOutcome = serialized?.status === 'failed' &&
+        serialized?.rollback?.rolledBack === true && Array.isArray(serialized?.rollback?.restored);
+      if (operationReceiptStore && (verifiedOutcome || rolledBackOutcome)) {
+        try {
+          operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized, requireIntentJournal: true });
+        } catch (error) {
+          retainWorkspaceLock = true;
+          throw error;
+        }
+        // Keep the durable intent as an audit marker. A terminal receipt takes
         // precedence during reconciliation; pathname deletion is avoided because
         // checking identity and unlinking are not atomic.
       }
+      if (intentCreated && !verifiedOutcome && !rolledBackOutcome) {
+        // Mutation outcome is not proven safe. Keep the durable workspace lock
+        // until an operator inspects the pending intent and recovers explicitly.
+        retainWorkspaceLock = true;
+      }
       return result;
+      } catch (error) {
+        if (intentCreated) retainWorkspaceLock = true;
+        throw error;
+      } finally {
+        if (!retainWorkspaceLock) await workspaceLease.release();
+      }
     },
     reconcile: async (input = {}, context = {}) => {
       const proposals = Array.isArray(input.proposals) ? input.proposals : [];
       if (proposals.length === 0) return { status: 'conflict', reason: 'no_change_proposals' };
       const operationId = typeof context.operationId === 'string' ? context.operationId : '';
       const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
-      const workspaceId = crypto.createHash('sha256').update(path.resolve(projectRoot), 'utf8').digest('hex');
+      const workspaceId = crypto.createHash('sha256').update(fs.realpathSync.native(path.resolve(projectRoot)), 'utf8').digest('hex');
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})
       }))), 'utf8').digest('hex');
@@ -151,7 +258,25 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
               if (pendingIntent.workspaceId !== workspaceId || pendingIntent.changeSetHash !== changeSetHash) {
                 return { status: 'conflict', reason: 'operation_intent_identity_conflict' };
               }
-              return { status: 'conflict', reason: 'operation_outcome_unknown', intent: pendingIntent };
+              return {
+                status: 'conflict',
+                reason: 'operation_outcome_unknown',
+                intent: {
+                  version: pendingIntent.version,
+                  status: pendingIntent.status,
+                  operationId: pendingIntent.operationId,
+                  tenantId: pendingIntent.tenantId,
+                  workspaceId: pendingIntent.workspaceId,
+                  changeSetHash: pendingIntent.changeSetHash,
+                  changes: Array.isArray(pendingIntent.changes) ? pendingIntent.changes.map(change => ({
+                    action: change.action,
+                    path: change.path,
+                    beforeExists: change.beforeExists,
+                    beforeContentSha256: change.beforeContentSha256,
+                    afterContentSha256: change.afterContentSha256
+                  })) : null
+                }
+              };
             }
           }
         } catch (error) {
@@ -166,6 +291,30 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         projectRoot,
         policy: { ...policy, allowRead: true, allowWrite: false, allowCommands: false, allowGit: false }
       });
+
+      if (receipt?.outcome === 'rolled_back') {
+        const restoredObservations = [];
+        let restoredStateMatches = true;
+        for (const expected of receipt.result.rollback.restored) {
+          const exists = await workspaceAgent.workspace.exists(expected.path);
+          let restored = !expected.existed && !exists;
+          if (expected.existed && exists) {
+            const content = await workspaceAgent.workspace.readText(expected.path);
+            const actualHash = crypto.createHash('sha256').update(content).digest('hex');
+            restored = actualHash === expected.contentSha256;
+          }
+          restoredObservations.push({ path: expected.path, restored });
+          if (!restored) restoredStateMatches = false;
+        }
+        if (restoredStateMatches) {
+          return { status: 'completed', result: receipt.result };
+        }
+        return {
+          status: 'conflict',
+          reason: 'rolled_back_workspace_state_conflict',
+          observations: restoredObservations
+        };
+      }
 
       const observations = [];
       let allApplied = true;

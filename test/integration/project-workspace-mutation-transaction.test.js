@@ -210,7 +210,7 @@ test('unreceipted rollback failure retains the workspace lock until explicit rec
       tenantId: 'tenant-lock-test'
     }));
   } finally {
-    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await terminateChild(worker);
     await fs.rm(base, { recursive: true, force: true });
   }
 });

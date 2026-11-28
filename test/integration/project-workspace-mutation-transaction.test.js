@@ -119,6 +119,20 @@ function waitForExit(child) {
   return new Promise(resolve => child.once('exit', resolve));
 }
 
+async function terminateChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Cleanup must never replace the test's original failure.
+  }
+  try {
+    await waitForExit(child);
+  } catch {
+    // The child may have exited between the state check and signal delivery.
+  }
+}
+
 function nextLine(child) {
   return new Promise((resolve, reject) => {
     let buffer = '';
@@ -156,7 +170,7 @@ test('canonical project tool receipts and reconciles a safely rolled-back operat
     assert.equal(outcome.reconciliation.result.status, 'failed');
     await waitForExit(worker);
   } finally {
-    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await terminateChild(worker);
     await fs.rm(base, { recursive: true, force: true });
   }
 });
@@ -221,6 +235,7 @@ test('canonical project tool holds the workspace lock through receipt commit and
     await waitForExit(contender);
 
     holder.stdin.write('continue');
+    holder.stdin.end();
     const committed = JSON.parse(await nextLine(holder));
     assert.equal(committed.result.status, 'verified');
     await waitForExit(holder);
@@ -235,7 +250,7 @@ test('canonical project tool holds the workspace lock through receipt commit and
     assert.equal(receiptStore.readIntent({ operationId: 'operation-stale', tenantId: 'tenant-lock-test' }), null);
   } finally {
     for (const child of [holder, contender, stale]) {
-      if (child && child.exitCode === null) child.kill('SIGKILL');
+      await terminateChild(child);
     }
     await fs.rm(base, { recursive: true, force: true });
   }

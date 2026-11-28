@@ -3,8 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const ProjectModifier = require('../../../../src/core/agent/project-builder/modification/project-modifier');
-const BuildExecutionService = require('../../../../src/core/agent/project-builder/execution/build-execution-service');
+const ProjectModifier = require('../../../../../src/core/agent/project-builder/modification/project-modifier');
+const BuildExecutionService = require('../../../../../src/core/agent/project-builder/execution/build-execution-service');
 
 test('verification rollback refuses to overwrite an external change made after ORIENT applied its after-image', async () => {
   const files = new Map([['config.json', 'before']]);

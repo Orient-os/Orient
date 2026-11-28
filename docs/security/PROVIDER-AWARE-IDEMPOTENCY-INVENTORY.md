@@ -1,6 +1,6 @@
 # Provider-aware side-effect and idempotency inventory
 
-**Scope:** production composition rooted at `app.js`, rechecked against `main` at `eb4b98373c3b19f9573d58154f2ebb230b90ec0b` on 2026-11-07. This is an evidence inventory for safety gate [#189](https://github.com/elsaadani40-pixel/Orient/issues/189), not a claim of exactly-once execution.
+**Scope:** production composition rooted at `app.js`, rechecked against `main` at `eb4b98373c3b19f9573d58154f2ebb230b90ec0b` on 2026-11-07. This is an evidence inventory for safety gate [#189](https://github.com/Orient-os/Orient/issues/189), not a claim of exactly-once execution.
 
 ## Production tool inventory
 

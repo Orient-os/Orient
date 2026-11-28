@@ -6,10 +6,10 @@ This document separates repository/CI evidence from physical-device evidence. A 
 
 ## Candidate build identity
 
-- Repository: `elsaadani40-pixel/Orient`
+- Repository: `Orient-os/Orient`
 - Integrated source commit: `4487394e4dbfbbc27a98107ff3f08d7aaac6c993`
 - Android source tree was built by Strict CI for PR head `2431c78fa95c19580adfc19acc8cc65c962ea2a0`, whose changes were merged by squash.
-- CI run: [Strict CI #2163](https://github.com/elsaadani40-pixel/Orient/actions/runs/38656583096)
+- CI run: [Strict CI #2163](https://github.com/Orient-os/Orient/actions/runs/38656583096)
 - CI Android job: **Android Companion (Gradle 9.6 / JDK 17)** — passed.
 - Artifact: `orient-one-android-debug-apk`, 11,240,178 bytes, SHA-256 digest reported by GitHub for the artifact archive: `57544bebc26b28c4dca385f5acc9d43e10d9e3c599a1434a3b27418937bc6dc9`.
 - Artifact archive expires **2026-10-21**. Download it from the linked Actions run's **Artifacts** section. The archive digest identifies the ZIP artifact, not the APK file inside it.

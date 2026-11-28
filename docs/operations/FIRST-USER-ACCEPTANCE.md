@@ -7,7 +7,7 @@ This checklist is for the first person trying ORIENT on their own machine. It va
 Requirements: Node.js 22 or newer and npm. From a terminal:
 
 ```sh
-git clone https://github.com/elsaadani40-pixel/Orient.git
+git clone https://github.com/Orient-os/Orient.git
 cd Orient
 npm ci
 npm test
@@ -64,5 +64,5 @@ Attach only redacted screenshots/logs. Never include passwords, session cookies,
 - A successful local run is not a production deployment or a security certification.
 - Browser automation and CI do not substitute for manually testing the actual phone/tablet/browser combination.
 - Do not expose this development listener to a LAN or public network without a separately reviewed HTTPS, session persistence, operational, and security configuration.
-- Asynchronous production workers remain disabled until every acceptance criterion in [safety gate #189](https://github.com/elsaadani40-pixel/Orient/issues/189) is proven by implementation and tests.
+- Asynchronous production workers remain disabled until every acceptance criterion in [safety gate #189](https://github.com/Orient-os/Orient/issues/189) is proven by implementation and tests.
 - Record reproducible failures as issues with the exact commit SHA, environment versions, steps, expected result, and observed result.

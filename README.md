@@ -2,7 +2,7 @@
 
 **A governed, local-first personal AI operating system — under active engineering.**
 
-[![ORIENT Strict CI](https://github.com/elsaadani40-pixel/Orient/actions/workflows/strict-ci.yml/badge.svg?branch=main)](https://github.com/elsaadani40-pixel/Orient/actions/workflows/strict-ci.yml) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![ORIENT Strict CI](https://github.com/Orient-os/Orient/actions/workflows/strict-ci.yml/badge.svg?branch=main)](https://github.com/Orient-os/Orient/actions/workflows/strict-ci.yml) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **Product stage:** Pre-release · Active engineering · Local-first
 >
@@ -13,7 +13,7 @@ ORIENT is being built as one coherent system for researching, planning, executin
 
 ## Start here
 
-- **Repository:** [Source code](https://github.com/elsaadani40-pixel/Orient)
+- **Repository:** [Source code](https://github.com/Orient-os/Orient)
 - **Brand website source:** [`website/index.html`](website/index.html) — responsive English/Arabic landing page with RTL support. This is source in the repository; it is not a claim that a public website deployment is live.
 - **Engineering constitution:** [`AGENT.md`](AGENT.md)
 - **Product contract and cross-device roadmap:** [`docs/product/ORIENT-PRODUCT-CONTRACT.md`](docs/product/ORIENT-PRODUCT-CONTRACT.md)
@@ -23,15 +23,15 @@ ORIENT is being built as one coherent system for researching, planning, executin
 - **Security policy:** [`SECURITY.md`](SECURITY.md)
 - **Current threat model and tested boundaries:** [`docs/security/THREAT-MODEL.md`](docs/security/THREAT-MODEL.md)
 - **Contribution rules:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- **Automated checks:** [GitHub Actions](https://github.com/elsaadani40-pixel/Orient/actions)
+- **Automated checks:** [GitHub Actions](https://github.com/Orient-os/Orient/actions)
 - **First-user acceptance:** [`docs/operations/FIRST-USER-ACCEPTANCE.md`](docs/operations/FIRST-USER-ACCEPTANCE.md) — clean checkout, local owner setup, one read-only task, refresh/logout checks, and a device evidence matrix.
 
 ### Browser workbench and integration status
 
 The unified website and canonical Runtime are integrated on `main`. Use `npm start` (or `npm run start:web`) to serve the landing page, public authentication, personal account, owner console, dashboard, memory interface, and task workbench from one local origin. The workbench submits tasks through the governed Runtime API; project audit, proposal, and owner-approved execution tools are registered in the server-side runtime.
 
-- [Integrated website/Runtime session acceptance — PR #260](https://github.com/elsaadani40-pixel/Orient/pull/260) — merged after exact-head automated checks passed.
-- [Integration/release gate — issue #225](https://github.com/elsaadani40-pixel/Orient/issues/225) — remains open for manual browser/device acceptance and deployment-readiness review.
+- [Integrated website/Runtime session acceptance — PR #260](https://github.com/Orient-os/Orient/pull/260) — merged after exact-head automated checks passed.
+- [Integration/release gate — issue #225](https://github.com/Orient-os/Orient/issues/225) — remains open for manual browser/device acceptance and deployment-readiness review.
 
 **What this does not mean:** automated CI does not prove that owner login, approvals, resume/cancellation, and retry behavior have been manually verified on a phone, tablet, and desktop. No public deployment URL is claimed. Keep public hosting blocked until HTTPS, session persistence, operational controls, and the security boundary have been reviewed.
 
@@ -69,7 +69,7 @@ CI results are commit-specific. A green run on an earlier commit does not make a
 ## Quick start
 
 ```bash
-git clone https://github.com/elsaadani40-pixel/Orient.git
+git clone https://github.com/Orient-os/Orient.git
 cd Orient
 npm ci
 npm test

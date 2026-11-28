@@ -37,7 +37,7 @@ test('brand navigation targets real sections in the document', () => {
   for (const anchor of anchors) {
     assert.ok(ids.has(anchor), `navigation target #${anchor} must exist`);
   }
-  assert.match(brand, /https:\/\/github\.com\/elsaadani40-pixel\/Orient/);
+  assert.match(brand, /https:\/\/github\.com\/Orient-os\/Orient/);
 });
 
 test('operational dashboard is responsive and exposes real runtime controls', () => {

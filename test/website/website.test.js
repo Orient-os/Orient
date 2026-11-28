@@ -36,5 +36,5 @@ test('ORIENT website respects reduced-motion preferences', () => {
 test('ORIENT website communicates active development without claiming full release', () => {
   assert.match(html, /Development status: ORIENT is actively being engineered/i);
   assert.match(html, /not a claim that every capability is released today/i);
-  assert.match(html, /https:\/\/github\.com\/elsaadani40-pixel\/Orient/);
+  assert.match(html, /https:\/\/github\.com\/Orient-os\/Orient/);
 });

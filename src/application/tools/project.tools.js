@@ -125,6 +125,19 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
           error.reconciliation = recovered;
           throw error;
         }
+
+        const pendingIntent = operationReceiptStore.readIntent({ operationId, tenantId });
+        if (pendingIntent) {
+          if (pendingIntent.workspaceId !== workspaceId || pendingIntent.changeSetHash !== changeSetHash) {
+            const error = new Error('Operation identity is already bound to a different pending project change');
+            error.code = 'PROJECT_OPERATION_INTENT_IDENTITY_CONFLICT';
+            throw error;
+          }
+          const error = new Error('A prior project operation has no terminal receipt; its outcome is unknown');
+          error.code = 'PROJECT_OPERATION_OUTCOME_UNKNOWN';
+          error.intent = pendingIntent;
+          throw error;
+        }
       }
 
       const agent = new ProjectBuilderAgent({

@@ -41,6 +41,11 @@ function spawnLockWorker({ workspaceRoot, lockDirectory, hold = false }) {
   });
 }
 
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise(resolve => child.once('exit', resolve));
+}
+
 function readFirstLine(child) {
   return new Promise((resolve, reject) => {
     let output = '';
@@ -91,13 +96,13 @@ test('a crashed owner leaves a fail-closed lock for explicit operator recovery',
     assert.equal(Number.isInteger(first.metadata.pid), true);
     assert.equal(typeof first.metadata.processStartIdentity, 'string');
     worker.kill('SIGKILL');
-    await new Promise(resolve => worker.once('exit', resolve));
+    await waitForExit(worker);
 
     const contender = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
     const second = await readFirstLine(contender);
     assert.equal(second.acquired, false);
     assert.equal(second.code, 'PROJECT_WORKSPACE_MUTATION_LOCKED');
-    await new Promise(resolve => contender.once('exit', resolve));
+    await waitForExit(contender);
   } finally {
     if (worker && worker.exitCode === null) worker.kill('SIGKILL');
     await fs.rm(f.root, { recursive: true, force: true });

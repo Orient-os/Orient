@@ -16,6 +16,14 @@ test('receipt store durably records a verified rollback as a terminal operation 
   const directory = path.join(root, 'receipts');
   fs.mkdirSync(directory, { mode: 0o700 });
   const store = new ProjectOperationReceiptStore({ directory });
+  const workspaceId = identity('/workspace');
+  const changeSetHash = identity('change-set');
+  store.beginIntent({
+    operationId: 'rollback-operation',
+    tenantId: 'tenant-a',
+    workspaceId,
+    changeSetHash
+  });
   const result = {
     status: 'failed',
     verification: { status: 'failed', failed: 1, passed: 0 },
@@ -31,8 +39,8 @@ test('receipt store durably records a verified rollback as a terminal operation 
     const receipt = store.write({
       operationId: 'rollback-operation',
       tenantId: 'tenant-a',
-      workspaceId: identity('/workspace'),
-      changeSetHash: identity('change-set'),
+      workspaceId,
+      changeSetHash,
       result
     });
     assert.equal(receipt.outcome, 'rolled_back');
@@ -47,6 +55,12 @@ test('receipt store refuses to commit an unverified and unrolled-back failure', 
   const directory = path.join(root, 'receipts');
   fs.mkdirSync(directory, { mode: 0o700 });
   const store = new ProjectOperationReceiptStore({ directory });
+  store.beginIntent({
+    operationId: 'unsafe-operation',
+    tenantId: 'tenant-a',
+    workspaceId: identity('/workspace'),
+    changeSetHash: identity('change-set')
+  });
   try {
     assert.throws(
       () => store.write({

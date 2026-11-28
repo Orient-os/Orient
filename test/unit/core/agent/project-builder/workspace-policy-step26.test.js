@@ -10,6 +10,19 @@ const WorkspacePolicy =
 const FileWorkspace =
   require('../../../../../src/core/agent/project-builder/workspace/file-workspace');
 
+function readRegularFileMode(target) {
+  const flags = fs.constants.O_RDONLY |
+    (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(target, flags);
+  try {
+    const stats = fs.fstatSync(fd);
+    assert.equal(stats.isFile(), true);
+    return stats.mode & 0o777;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function makePolicy(root) {
   return new WorkspacePolicy({
     allowedRoot: root,
@@ -165,4 +178,50 @@ test('FileWorkspace writes through the policy-owned secure write path', async ()
   );
 
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+
+test('writeFile preserves existing regular-file permissions across atomic replacement', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-preserve-mode-'));
+  try {
+    const target = path.join(root, 'executable.sh');
+    fs.writeFileSync(target, '#!/bin/sh\necho before\n', { mode: 0o755 });
+    fs.chmodSync(target, 0o755);
+    const policy = makePolicy(root);
+    policy.writeFile('executable.sh', '#!/bin/sh\necho after\n');
+    assert.equal(readRegularFileMode(target), 0o755);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ProjectModifier rollback preserves the original file permissions', async () => {
+  const ProjectModifier = require('../../../../../src/core/agent/project-builder/modification/project-modifier');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-rollback-mode-'));
+  try {
+    const target = path.join(root, 'config.json');
+    fs.writeFileSync(target, '{"state":"before"}\n');
+    fs.chmodSync(target, 0o644);
+    const workspace = new FileWorkspace({ policy: makePolicy(root) });
+    const modifier = new ProjectModifier({ workspace });
+    const modification = await modifier.apply({
+      changes: [{
+        action: 'update',
+        path: 'config.json',
+        content: '{"state":"after"}\n',
+        expectedContentSha256: require('node:crypto').createHash('sha256').update('{"state":"before"}\n').digest('hex')
+      }]
+    }, {
+      beforeMutation: async ({ snapshots }) => {
+        assert.equal(snapshots[0].type, 'regular');
+        assert.equal(snapshots[0].mode, 0o644);
+      }
+    });
+    assert.equal(readRegularFileMode(target), 0o644);
+    await modifier.rollback(modification);
+    assert.equal(fs.readFileSync(target, 'utf8'), '{"state":"before"}\n');
+    assert.equal(readRegularFileMode(target), 0o644);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

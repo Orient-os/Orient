@@ -183,6 +183,64 @@ class WorkspacePolicy {
     }
   }
 
+  _existingFileMetadata(targetPath) {
+    if (process.platform === 'linux') {
+      let fd;
+      try {
+        fd = fs.openSync(
+          targetPath,
+          fs.constants.O_RDONLY |
+            fs.constants.O_NOFOLLOW |
+            fs.constants.O_NONBLOCK
+        );
+        const stats = fs.fstatSync(fd);
+        if (!stats.isFile() || stats.nlink !== 1) {
+          const error = new Error('Workspace write target must be a single-link regular file');
+          error.code = 'WORKSPACE_FILE_TYPE_UNSUPPORTED';
+          throw error;
+        }
+        return { type: 'regular', mode: stats.mode & 0o777 };
+      } catch (error) {
+        if (error.code === 'ENOENT') return { type: 'absent', mode: null };
+        if (error.code === 'ELOOP') {
+          const invalid = new Error('Workspace write target is a symbolic link and is denied');
+          invalid.code = 'WORKSPACE_SYMLINK_DENIED';
+          throw invalid;
+        }
+        throw error;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+    }
+
+    let stats;
+    try {
+      stats = fs.lstatSync(targetPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') return { type: 'absent', mode: null };
+      throw error;
+    }
+    if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) {
+      const error = new Error('Workspace write target must be a single-link regular file');
+      error.code = 'WORKSPACE_FILE_TYPE_UNSUPPORTED';
+      throw error;
+    }
+    return { type: 'regular', mode: stats.mode & 0o777 };
+  }
+
+  getFileMetadata(relativePath) {
+    const resolved = this.assertWrite(relativePath);
+    if (process.platform !== 'linux') {
+      return this._existingFileMetadata(resolved);
+    }
+    const parent = this._openParentDirectory(resolved);
+    try {
+      return this._existingFileMetadata(parent.path + '/' + parent.basename);
+    } finally {
+      fs.closeSync(parent.fd);
+    }
+  }
+
   writeFile(relativePath, content) {
     if (typeof content !== 'string') {
       throw new TypeError('Workspace file content must be a string');
@@ -191,6 +249,8 @@ class WorkspacePolicy {
     const resolved = this.assertWrite(relativePath);
 
     if (process.platform !== 'linux') {
+      const metadata = this._existingFileMetadata(resolved);
+      const mode = metadata.type === 'regular' ? metadata.mode : 0o600;
       const parent = path.dirname(resolved);
       fs.mkdirSync(parent, { recursive: true });
       const temp = `${resolved}.orient-tmp-${process.pid}-${Date.now()}`;
@@ -204,6 +264,7 @@ class WorkspacePolicy {
       );
       try {
         fs.writeFileSync(fd, content, 'utf8');
+        fs.fchmodSync(fd, mode);
         fs.fsyncSync(fd);
       } finally {
         fs.closeSync(fd);
@@ -219,6 +280,8 @@ class WorkspacePolicy {
       `.orient-write-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const tempPath = `${parent.path}/${tempName}`;
     const targetPath = `${parent.path}/${parent.basename}`;
+    const metadata = this._existingFileMetadata(targetPath);
+    const mode = metadata.type === 'regular' ? metadata.mode : 0o600;
     let tempFd = null;
 
     try {
@@ -231,6 +294,7 @@ class WorkspacePolicy {
         0o600
       );
       fs.writeFileSync(tempFd, content, 'utf8');
+      fs.fchmodSync(tempFd, mode);
       fs.fsyncSync(tempFd);
       fs.closeSync(tempFd);
       tempFd = null;

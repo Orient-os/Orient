@@ -137,9 +137,21 @@ class ProjectModifier {
       };
     }
 
+    const metadata = typeof this.workspace.getFileMetadata === 'function'
+      ? await this.workspace.getFileMetadata(change.path)
+      : { type: 'regular', mode: 0o600 };
+    if (metadata.type !== 'regular' ||
+        !Number.isInteger(metadata.mode) ||
+        metadata.mode < 0 || metadata.mode > 0o777) {
+      const error = new Error('Workspace before-image must be a regular file with a valid permission mode');
+      error.code = 'PROJECT_MODIFICATION_FILE_METADATA_INVALID';
+      throw error;
+    }
     return {
       path: change.path,
       existed: true,
+      type: metadata.type,
+      mode: metadata.mode,
       content:
         await this.workspace.readText(
           change.path

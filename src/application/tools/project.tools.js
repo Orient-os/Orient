@@ -192,6 +192,8 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
               action: change.action,
               path: change.path,
               beforeExists: snapshot.existed,
+              beforeType: snapshot.existed ? (snapshot.type || 'regular') : 'absent',
+              beforeMode: snapshot.existed ? (snapshot.mode ?? 0o600) : null,
               beforeContent,
               beforeContentSha256: snapshot.existed
                 ? crypto.createHash('sha256').update(beforeContent).digest('hex')

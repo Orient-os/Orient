@@ -28,6 +28,8 @@ test('receipt store durably records a verified rollback as a terminal operation 
         action: 'update',
         path: 'settings.json',
         beforeExists: true,
+        beforeType: 'regular',
+        beforeMode: 0o644,
         beforeContent: 'before',
         beforeContentSha256: identity('before'),
         afterContentSha256: identity('after')
@@ -36,6 +38,8 @@ test('receipt store durably records a verified rollback as a terminal operation 
         action: 'create',
         path: 'new.txt',
         beforeExists: false,
+        beforeType: 'absent',
+        beforeMode: null,
         beforeContent: null,
         beforeContentSha256: null,
         afterContentSha256: identity('new')
@@ -88,6 +92,8 @@ test('receipt store refuses to commit an unverified and unrolled-back failure', 
       action: 'create',
       path: 'new.txt',
       beforeExists: false,
+      beforeType: 'absent',
+      beforeMode: null,
       beforeContent: null,
       beforeContentSha256: null,
       afterContentSha256: identity('new')

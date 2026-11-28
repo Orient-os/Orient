@@ -20,6 +20,8 @@ There is no portable atomic compare-and-swap for arbitrary external file writers
 - Android Termux uses the Linux process identity interface when the runtime exposes the required `/proc` records.
 - Other platforms, shared network filesystems, host changes, boot-session changes, missing/corrupt owner metadata, and unknown process state fail closed. Do not work around those checks by deleting files.
 
+The inspection output includes bounded before-image file contents from the private intent journal. Treat terminal output and copied incident records as sensitive source/configuration data; store them only in the approved private incident location.
+
 ## Recovery procedure
 
 1. Stop the ORIENT service or worker that can access the affected workspace. Do not kill unrelated processes.

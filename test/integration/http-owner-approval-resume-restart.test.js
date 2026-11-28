@@ -18,6 +18,7 @@ const AgentOrchestrator = require('../../src/core/agent/orchestrator/agent-orche
 const ToolRegistry = require('../../src/core/tools/tool.registry');
 const OrientRuntime = require('../../src/core/runtime/orient-runtime');
 const createProjectTools = require('../../src/application/tools/project.tools');
+const ProjectOperationReceiptStore = require('../../src/infrastructure/execution/project-operation-receipt-store');
 const CapabilityMapper = require('../../src/core/agent/capability/capability-mapper');
 const PolicyEngine = require('../../src/core/agent/policy/policy-engine');
 const AuthorizationService = require('../../src/core/agent/authorization/authorization-service');
@@ -44,12 +45,18 @@ async function sandboxAvailable(root) {
 }
 
 function createRuntime(root, persistence, ownerAuth) {
+  const agentDataRoot = path.join(path.dirname(root), path.basename(root) + '.orient-agent-data');
+  fs.mkdirSync(agentDataRoot, { recursive: true, mode: 0o700 });
+  const operationReceiptStore = new ProjectOperationReceiptStore({
+    directory: path.join(agentDataRoot, 'project-operation-receipts')
+  });
   const registry = new AgentRegistry();
   registerDefaultAgents(registry);
   const tools = new ToolRegistry();
   for (const tool of createProjectTools({
     projectRoot: root,
-    policy: { allowCommands: true, allowedCommands: ['node'] }
+    policy: { allowCommands: true, allowedCommands: ['node'] },
+    operationReceiptStore
   })) tools.register(tool);
 
   const orchestrator = new AgentOrchestrator({
@@ -110,6 +117,7 @@ async function stopServer(server) {
 
 test('owner HTTP decision resumes the same high-risk mission after runtime restart using durable approval', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-http-approval-restart-'));
+  const agentDataRoot = path.join(path.dirname(root), path.basename(root) + '.orient-agent-data');
   let runtime;
   let server;
   try {
@@ -244,5 +252,6 @@ test('owner HTTP decision resumes the same high-risk mission after runtime resta
     await stopServer(server);
     if (runtime) await runtime.shutdown({ cancelQueued: false });
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(agentDataRoot, { recursive: true, force: true });
   }
 });

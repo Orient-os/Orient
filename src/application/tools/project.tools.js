@@ -76,6 +76,13 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         throw error;
       }
 
+      const operationId = typeof context.operationId === 'string' ? context.operationId : '';
+      const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
+      if (operationReceiptStore && (!operationId || !tenantId)) {
+        const error = new Error('Durable operation identity is required before project mutation');
+        error.code = 'PROJECT_OPERATION_IDENTITY_REQUIRED';
+        throw error;
+      }
       const lockDirectory = path.join(
         operationReceiptStore?.directory || path.join(os.tmpdir(), 'orient-workspace-mutation-state'),
         'workspace-locks'
@@ -90,13 +97,6 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       let retainWorkspaceLock = false;
       let intentCreated = false;
       try {
-      const operationId = typeof context.operationId === 'string' ? context.operationId : '';
-      const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
-      if (operationReceiptStore && (!operationId || !tenantId)) {
-        const error = new Error('Durable operation identity is required before project mutation');
-        error.code = 'PROJECT_OPERATION_IDENTITY_REQUIRED';
-        throw error;
-      }
       const workspaceId = mutationLock.workspaceId;
       const changeSetHash = crypto.createHash('sha256').update(JSON.stringify(proposals.map(({ action, path: proposalPath, content, expectedContentSha256 }) => ({
         action, path: proposalPath, content, ...(expectedContentSha256 ? { expectedContentSha256 } : {})

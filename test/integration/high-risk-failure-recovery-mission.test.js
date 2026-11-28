@@ -22,6 +22,7 @@ const ApprovalService = require('../../src/core/agent/approval/approval-service'
 const JsonPersistence = require('../../src/infrastructure/persistence/json/json-persistence');
 const WorkspacePolicy = require('../../src/core/agent/project-builder/workspace/workspace-policy');
 const CommandRunner = require('../../src/core/agent/project-builder/workspace/command-runner');
+const ProjectOperationReceiptStore = require('../../src/infrastructure/execution/project-operation-receipt-store');
 
 
 async function skipIfOsSandboxUnavailable(t, root) {
@@ -49,8 +50,17 @@ function createRuntime(root, { approvalService = null, persistence: persisted = 
   const registry = new AgentRegistry();
   registerDefaultAgents(registry);
 
+  const agentDataRoot = path.join(path.dirname(root), path.basename(root) + '.orient-agent-data');
+  fs.mkdirSync(agentDataRoot, { recursive: true, mode: 0o700 });
+  const operationReceiptStore = new ProjectOperationReceiptStore({
+    directory: path.join(agentDataRoot, 'project-operation-receipts')
+  });
   const toolRegistry = new ToolRegistry();
-  for (const tool of createProjectTools({ projectRoot: root, policy: projectPolicy })) {
+  for (const tool of createProjectTools({
+    projectRoot: root,
+    policy: projectPolicy,
+    operationReceiptStore
+  })) {
     toolRegistry.register(tool);
   }
 
@@ -157,6 +167,7 @@ test('high-risk verification failure rolls back after a real approval and cannot
 
   runtime.shutdown({ cancelQueued: false });
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(path.join(path.dirname(root), path.basename(root) + '.orient-agent-data'), { recursive: true, force: true });
 });
 
 test('high-risk crash after side effect does not execute the side effect twice', async t => {
@@ -261,6 +272,7 @@ test('concurrent resume attempts are serialized by the durable lease', async t =
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-mission-8-concurrent-resume-'));
   if (await skipIfOsSandboxUnavailable(t, root)) {
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.join(path.dirname(root), path.basename(root) + '.orient-agent-data'), { recursive: true, force: true });
     return;
   }
   fs.mkdirSync(path.join(root, 'test'));

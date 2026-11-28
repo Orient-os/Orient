@@ -39,6 +39,22 @@ function readProcessStartIdentity(pid) {
   return startTime;
 }
 
+function readPidNamespace() {
+  let value;
+  try {
+    value = fs.readlinkSync('/proc/self/ns/pid');
+  } catch (error) {
+    const unsupported = new Error('Process namespace identity is unavailable');
+    unsupported.code = 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM';
+    unsupported.cause = error;
+    throw unsupported;
+  }
+  if (typeof value !== 'string' || !/^pid:\[\d+\]$/.test(value)) {
+    fail('Process namespace identity is malformed', 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM');
+  }
+  return value;
+}
+
 function readBootId() {
   let value;
   try {
@@ -109,6 +125,7 @@ function readOwner(lockPath) {
         typeof owner.token !== 'string' || !/^[a-f0-9-]{36}$/i.test(owner.token) ||
         typeof owner.hostname !== 'string' || !owner.hostname ||
         typeof owner.bootId !== 'string' || !owner.bootId ||
+        typeof owner.pidNamespace !== 'string' || !/^pid:\\[\\d+\\]$/.test(owner.pidNamespace) ||
         !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
         typeof owner.processStartIdentity !== 'string' ||
         ((owner.operationId === undefined) !== (owner.tenantId === undefined)) ||
@@ -191,6 +208,7 @@ class WorkspaceMutationLock {
       } : {}),
       hostname: os.hostname(),
       bootId: readBootId(),
+      pidNamespace: readPidNamespace(),
       pid: process.pid,
       processStartIdentity: readProcessStartIdentity('self'),
       acquiredAt: new Date().toISOString()
@@ -268,7 +286,8 @@ class WorkspaceMutationLock {
     if (owner.token !== expectedToken || owner.workspaceId !== this.workspaceId) {
       fail('Workspace lock identity changed; refusing recovery', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
     }
-    if (owner.hostname !== os.hostname() || owner.bootId !== readBootId()) {
+    if (owner.hostname !== os.hostname() || owner.bootId !== readBootId() ||
+        owner.pidNamespace !== readPidNamespace()) {
       fail('Lock owner belongs to another host or boot session; automatic recovery is unsafe', 'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN');
     }
 

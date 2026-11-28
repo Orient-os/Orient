@@ -8,6 +8,12 @@ The workspace lock serializes every governed project mutation across independent
 
 The recovery command only quarantines a lock after it proves that the recorded owner process is no longer the same process, on the same host and boot session. It preserves the original lock metadata and records the operator decision in the quarantine directory.
 
+## Concurrency boundary
+
+The lock coordinates ORIENT processes that use the same private application lock directory for the canonical `project.execute_change` tool. It is not a mandatory lock for arbitrary editors or unrelated processes that write directly into the workspace. Before-image validation runs after acquiring the ORIENT lock, and rollback checks that the current bytes still match the operation after-image before restoring them. A mismatch is treated as a rollback conflict and keeps the workspace locked.
+
+There is no portable atomic compare-and-swap for arbitrary external file writers in the current Node filesystem API. If an environment requires protection against non-cooperating external writers racing in the narrow interval between a rollback comparison and replacement, keep governed writes disabled and isolate the workspace until an OS-enforced write boundary is deployed. Do not interpret the ORIENT lock as a host-wide filesystem lock.
+
 ## Supported environment
 
 - Linux local filesystems with `/proc`, stable boot ID, atomic same-filesystem directory creation/rename, and private application storage.
@@ -42,7 +48,7 @@ The recovery command only quarantines a lock after it proves that the recorded o
    ```
 
 6. The command atomically renames the lock directory to a unique `.quarantine.*` path and writes `recovery.json` containing the owner evidence, operator, reason, and timestamp. It does not delete the evidence. Preserve this quarantine directory with the incident record.
-7. Inspect the matching pending operation intent and receipt. A pending intent without a verified receipt means the operation outcome is unknown; **do not replay it**. Compare every affected file with the proposal's before/after images, identify any partial writes, and restore only from a reviewed backup or a separately approved recovery plan.
+7. Inspect the matching pending operation intent and receipt. A pending intent without a terminal receipt (`verified` or `rolled_back`) means the operation outcome is unknown; **do not replay it**. Compare every affected file with the proposal's before/after images, identify any partial writes, and restore only from a reviewed backup or a separately approved recovery plan.
 8. Run the project audit and relevant tests. Re-enable governed writes only after the workspace is consistent and the incident is documented.
 
 ## When recovery refuses

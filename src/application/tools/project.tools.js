@@ -204,7 +204,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         serialized?.rollback?.rolledBack === true && Array.isArray(serialized?.rollback?.restored);
       if (operationReceiptStore && (verifiedOutcome || rolledBackOutcome)) {
         try {
-          operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized });
+          operationReceiptStore.write({ operationId, tenantId, workspaceId, changeSetHash, result: serialized, requireIntentJournal: true });
         } catch (error) {
           retainWorkspaceLock = true;
           throw error;

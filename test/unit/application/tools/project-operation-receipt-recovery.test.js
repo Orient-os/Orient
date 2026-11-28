@@ -231,7 +231,7 @@ test('receipt persistence failure after a verified mutation remains unreconciled
     assert.ok(recovered.intent, 'pending intent preserves uncertainty after receipt persistence fails');
     await assert.rejects(
       execute.execute(input, context),
-      error => error?.code === 'PROJECT_OPERATION_OUTCOME_UNKNOWN'
+      error => error?.code === 'PROJECT_WORKSPACE_MUTATION_LOCKED'
     );
     assert.equal(
       await fs.readFile(path.join(root, 'src/receipt-write-failure.txt'), 'utf8'),

@@ -16,7 +16,7 @@ There is no portable atomic compare-and-swap for arbitrary external file writers
 
 ## Supported environment
 
-- Linux local filesystems with `/proc`, stable boot ID, atomic same-filesystem directory creation/rename, and private application storage.
+- Linux local filesystems with `/proc`, stable boot ID, process namespace identity, atomic same-filesystem directory creation/rename, and private application storage. Recovery must run in the same PID namespace as the owner.
 - Android Termux uses the Linux process identity interface when the runtime exposes the required `/proc` records.
 - Other platforms, shared network filesystems, host changes, boot-session changes, missing/corrupt owner metadata, and unknown process state fail closed. Do not work around those checks by deleting files.
 

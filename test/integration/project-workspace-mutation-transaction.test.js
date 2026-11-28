@@ -36,7 +36,11 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
             status: 'verified',
             verification: { status: 'passed', failed: 0 },
             toJSON() {
-              return { status: 'verified', verification: { status: 'passed', failed: 0 } };
+              return {
+                status: 'verified',
+                changeSet: { changes: [proposal] },
+                verification: { status: 'passed', failed: 0 }
+              };
             }
           };
         };

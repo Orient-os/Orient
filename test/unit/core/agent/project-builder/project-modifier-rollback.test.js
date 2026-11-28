@@ -143,7 +143,10 @@ test('rollback refuses a terminal rolled-back outcome when an untouched file cha
   const workspace = {
     exists: async filePath => files.has(filePath),
     readText: async filePath => files.get(filePath),
-    writeText: async (filePath, content) => { files.set(filePath, content); },
+    writeText: async (filePath, content) => {
+      files.set(filePath, content);
+      if (filePath === 'first.txt') files.set('second.txt', 'external-change');
+    },
     removeFile: async filePath => { files.delete(filePath); }
   };
   const modifier = new ProjectModifier({ workspace });
@@ -168,8 +171,7 @@ test('rollback refuses a terminal rolled-back outcome when an untouched file cha
           expectedContentSha256: crypto.createHash('sha256').update('before-second').digest('hex')
         }
       ]
-    },
-    beforeMutation: async () => { files.set('second.txt', 'external-change'); }
+    }
   });
 
   assert.equal(result.status, 'rollback-failed');

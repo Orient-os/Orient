@@ -27,7 +27,11 @@
 | Operator dashboard for progress, approvals, history, cancellation, and recovery | Planned | No complete dashboard was demonstrated in the current repository baseline. |
 | Android device adapters (contacts, notifications, intents, audio, background events) integrated through the canonical runtime | Planned | Must be delivered and tested as a governed adapter; do not infer it from the existence of a separate Android project. |
 | External personal-workflow integrations (messaging, bookings, contacts across providers) | Planned | No end-to-end adapter set was demonstrated in this baseline. Each integration needs explicit permissions, offline/error behavior, and contract tests. |
-| Release-grade install/upgrade/backup/restore/rollback workflow | Implemented but unverified end to end | README setup instructions and CI exist; a release-grade clean install, data migration, backup/restore, and rollback proof remains a release gate. |
+| Developer setup instructions | Implemented but unverified end to end | README setup instructions exist; this is not a supported non-developer installer or a verified clean-install experience. |
+| Release-grade installation for non-developers | Planned | No supported installer, tagged end-user release flow, or first-run diagnostics has been demonstrated. |
+| Backup and export of local user data | Planned | No supported backup/export command or owner route, consistent archive snapshot, manifest, or checksum-verified export workflow has been demonstrated. |
+| Restore of local user data | Planned | No archive validation and staged, crash-recoverable restore workflow has been demonstrated. Component persistence tests do not establish end-to-end user data restoration. |
+| Release-grade upgrade and rollback workflow | Planned | No reproducible clean-install → upgrade → rollback lifecycle has been demonstrated. Component migration or test rollback behavior is not equivalent to a release-grade user workflow. |
 
 ## Current proof baseline
 

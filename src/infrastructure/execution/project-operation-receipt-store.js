@@ -327,6 +327,13 @@ class ProjectOperationReceiptStore {
     }
 
     this.ensureDirectory();
+    const intent = this.readIntent({ operationId, tenantId });
+    if (!intent) {
+      fail('A durable pending intent is required before committing a project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_MISSING');
+    }
+    if (intent.workspaceId !== workspaceId || intent.changeSetHash !== changeSetHash) {
+      fail('Project receipt identity does not match its pending intent', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
+    }
     const filePath = this.receiptPath(operationId, tenantId);
     const lockPath = filePath + '.lock';
     const token = crypto.randomUUID();

@@ -19,7 +19,7 @@ const MAX_INTENT_BYTES = 2 * 1024 * 1024;
 const MAX_INTENT_CHANGES = 10;
 const MAX_INTENT_BEFORE_BYTES = 1024 * 1024;
 const MAX_INTENT_BEFORE_FILE_BYTES = 256 * 1024;
-const MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
+const MAX_RECEIPT_BYTES = 1024 * 1024;
 
 function readBoundedFile(fd, maxBytes, code, label) {
   const buffer = Buffer.allocUnsafe(maxBytes + 1);
@@ -122,10 +122,13 @@ function syncDirectory(directory) {
     fd = fs.openSync(directory, 'r');
     fs.fsyncSync(fd);
   } catch (error) {
-    const unsupported = new Error('Receipt storage does not provide durable directory synchronization');
-    unsupported.code = 'PROJECT_OPERATION_RECEIPT_UNSUPPORTED_FILESYSTEM';
-    unsupported.cause = error;
-    throw unsupported;
+    if (['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) {
+      const unsupported = new Error('Receipt storage does not provide durable directory synchronization');
+      unsupported.code = 'PROJECT_OPERATION_RECEIPT_UNSUPPORTED_FILESYSTEM';
+      unsupported.cause = error;
+      throw unsupported;
+    }
+    throw error;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }

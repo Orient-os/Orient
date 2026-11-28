@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const WorkspaceMutationLock = require('../../../../src/infrastructure/execution/workspace-mutation-lock');
 
@@ -383,6 +383,30 @@ test('inspection classifies a lock directory without owner.json as recovery_requ
     assert.equal(after.ino, before.ino);
   } finally {
     await stopAndReap(contender);
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('operator inspection reports ownerless locks as locked and recovery_required', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const script = path.resolve(__dirname, '../../../../scripts/recover-project-workspace-lock.js');
+    const result = spawnSync(process.execPath, [
+      script,
+      '--workspace', f.workspaceRoot,
+      '--lock-directory', f.lockDirectory,
+      '--inspect'
+    ], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.locked, true);
+    assert.equal(output.classification.state, 'recovery_required');
+    assert.equal(output.classification.reason, 'owner_metadata_missing');
+    assert.equal(output.owner, null);
+  } finally {
     await fs.rm(f.root, { recursive: true, force: true });
   }
 });

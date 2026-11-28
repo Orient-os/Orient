@@ -22,7 +22,25 @@ test('receipt store durably records a verified rollback as a terminal operation 
     operationId: 'rollback-operation',
     tenantId: 'tenant-a',
     workspaceId,
-    changeSetHash
+    changeSetHash,
+    changes: [
+      {
+        action: 'update',
+        path: 'settings.json',
+        beforeExists: true,
+        beforeContent: 'before',
+        beforeContentSha256: identity('before'),
+        afterContentSha256: identity('after')
+      },
+      {
+        action: 'create',
+        path: 'new.txt',
+        beforeExists: false,
+        beforeContent: null,
+        beforeContentSha256: null,
+        afterContentSha256: identity('new')
+      }
+    ]
   });
   const result = {
     status: 'failed',
@@ -59,7 +77,15 @@ test('receipt store refuses to commit an unverified and unrolled-back failure', 
     operationId: 'unsafe-operation',
     tenantId: 'tenant-a',
     workspaceId: identity('/workspace'),
-    changeSetHash: identity('change-set')
+    changeSetHash: identity('change-set'),
+    changes: [{
+      action: 'create',
+      path: 'new.txt',
+      beforeExists: false,
+      beforeContent: null,
+      beforeContentSha256: null,
+      afterContentSha256: identity('new')
+    }]
   });
   try {
     assert.throws(

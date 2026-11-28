@@ -312,10 +312,30 @@ class WorkspaceMutationLock {
     }
 
     const owner = readOwner(this.lockPath, { allowIncomplete: true });
-    if (owner === MISSING_OWNER) {
-      return { state: 'recovery_required', reason: 'owner_metadata_missing', owner: null, recoveryRequired: true };
-    }
-    if (owner === INCOMPLETE_OWNER) {
+    if (owner === MISSING_OWNER || owner === INCOMPLETE_OWNER) {
+      let currentDirectoryStats;
+      try {
+        currentDirectoryStats = fs.lstatSync(this.lockPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          fail('Workspace lock changed while it was being classified', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+        throw error;
+      }
+      if (!currentDirectoryStats.isDirectory() || currentDirectoryStats.isSymbolicLink() ||
+          currentDirectoryStats.dev !== directoryStats.dev || currentDirectoryStats.ino !== directoryStats.ino) {
+        fail('Workspace lock identity changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      }
+      if (owner === MISSING_OWNER) {
+        try {
+          fs.lstatSync(path.join(this.lockPath, 'owner.json'));
+          fail('Workspace owner metadata appeared during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          if (error.code === 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT') throw error;
+        }
+        return { state: 'recovery_required', reason: 'owner_metadata_missing', owner: null, recoveryRequired: true };
+      }
       return { state: 'recovery_required', reason: 'owner_metadata_incomplete', owner: null, recoveryRequired: true };
     }
     if (owner.workspaceId !== this.workspaceId) {

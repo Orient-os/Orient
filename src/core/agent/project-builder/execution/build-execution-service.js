@@ -173,6 +173,7 @@ class BuildExecutionService {
         verification
       });
     } catch (error) {
+      if (typeof error.code === 'string' && error.code.startsWith('PROJECT_OPERATION_')) throw error;
       const rollbackFailed =
         error.code === 'PROJECT_MODIFICATION_ROLLBACK_FAILED';
       return new BuildExecutionResult({

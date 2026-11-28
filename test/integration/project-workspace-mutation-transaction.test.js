@@ -26,7 +26,7 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
       if (mode === 'holder') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
           await options.beforeExecution({
-            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            snapshots: [{ path: proposal.path, existed: true, type: 'regular', mode: 0o600, content: 'before' }],
             changes: [proposal]
           });
           await fs.writeFile(path.join(root, proposal.path), proposal.content);
@@ -47,7 +47,7 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
       } else if (mode === 'rolledback') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
           await options.beforeExecution({
-            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            snapshots: [{ path: proposal.path, existed: true, type: 'regular', mode: 0o600, content: 'before' }],
             changes: [proposal]
           });
           const result = {
@@ -67,7 +67,7 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
       } else if (mode === 'rollback-failed') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
           await options.beforeExecution({
-            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            snapshots: [{ path: proposal.path, existed: true, type: 'regular', mode: 0o600, content: 'before' }],
             changes: [proposal]
           });
           const result = {
@@ -159,7 +159,7 @@ test('canonical project tool receipts and reconciles a safely rolled-back operat
   const receiptDirectory = path.join(base, 'agent-data', 'project-operation-receipts');
   await fs.mkdir(root);
   await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(path.join(root, 'target.txt'), 'before');
+  await fs.writeFile(path.join(root, 'target.txt'), 'before', { mode: 0o600 });
   let worker;
   try {
     worker = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-rolledback', mode: 'rolledback' });
@@ -182,7 +182,7 @@ test('unreceipted rollback failure retains the workspace lock until explicit rec
   const lockDirectory = path.join(receiptDirectory, 'workspace-locks');
   await fs.mkdir(root);
   await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(path.join(root, 'target.txt'), 'before');
+  await fs.writeFile(path.join(root, 'target.txt'), 'before', { mode: 0o600 });
   let worker;
   try {
     worker = spawnToolWorker({ workspaceRoot: root, receiptDirectory, operationId: 'operation-rollback-failed', mode: 'rollback-failed' });
@@ -226,7 +226,7 @@ test('canonical project tool holds the workspace lock through receipt commit and
   const receiptDirectory = path.join(base, 'agent-data', 'project-operation-receipts');
   await fs.mkdir(root);
   await fs.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(path.join(root, 'target.txt'), 'before');
+  await fs.writeFile(path.join(root, 'target.txt'), 'before', { mode: 0o600 });
   let holder;
   let contender;
   let stale;

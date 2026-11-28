@@ -220,6 +220,49 @@ class ProjectModifier {
       }
     }
 
+    const reportedPaths = new Set(rollbackErrors.map(item => item.path));
+    for (const snapshot of snapshots) {
+      if (reportedPaths.has(snapshot.path)) continue;
+      try {
+        const exists = await this.workspace.exists(snapshot.path);
+        if (!snapshot.existed) {
+          if (exists) {
+            rollbackErrors.push({
+              path: snapshot.path,
+              code: 'WORKSPACE_ROLLBACK_CONFLICT',
+              message: 'A file exists where the recorded before-state was absent'
+            });
+          }
+          continue;
+        }
+        if (!exists) {
+          rollbackErrors.push({
+            path: snapshot.path,
+            code: 'WORKSPACE_ROLLBACK_CONFLICT',
+            message: 'A file is missing where the recorded before-state existed'
+          });
+          continue;
+        }
+        const current = await this.workspace.readText(snapshot.path);
+        const currentHash = crypto.createHash('sha256').update(current).digest('hex');
+        const beforeHash = crypto.createHash('sha256').update(snapshot.content).digest('hex');
+        if (currentHash !== beforeHash) {
+          rollbackErrors.push({
+            path: snapshot.path,
+            code: 'WORKSPACE_ROLLBACK_CONFLICT',
+            message: 'Workspace did not return to the complete recorded before-state'
+          });
+        }
+      } catch (error) {
+        rollbackErrors.push({
+          path: snapshot.path,
+          code: error.code || 'WORKSPACE_ROLLBACK_FAILED',
+          name: error.name,
+          message: error.message
+        });
+      }
+    }
+
     if (rollbackErrors.length > 0) {
       const error = new Error('Rollback failed');
       error.code = 'PROJECT_MODIFICATION_ROLLBACK_FAILED';

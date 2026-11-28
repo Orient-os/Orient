@@ -251,8 +251,11 @@ class WorkspaceMutationLock {
         if (current.token !== token || current.workspaceId !== this.workspaceId) {
           fail('Workspace lock ownership changed; refusing to release another owner lock', 'PROJECT_WORKSPACE_LOCK_OWNERSHIP_LOST');
         }
-        fs.unlinkSync(path.join(this.lockPath, 'owner.json'));
-        fs.rmdirSync(this.lockPath);
+        // Atomically retire the owned lock directory. Unlink-then-rmdir has
+        // a crash window that leaves an ownerless lock which cannot be safely
+        // attributed or recovered. The tombstone preserves the owner evidence.
+        const retiredPath = this.lockPath + '.released.' + token;
+        fs.renameSync(this.lockPath, retiredPath);
         syncDirectory(this.lockDirectory);
         released = true;
       }

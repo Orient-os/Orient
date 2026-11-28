@@ -295,7 +295,7 @@ class ProjectModifier {
     if (beforeMutation !== null && typeof beforeMutation !== 'function') {
       throw new TypeError('beforeMutation must be a function when provided');
     }
-    if (beforeMutation) await beforeMutation({ snapshots });
+    if (beforeMutation) await beforeMutation({ snapshots, changes: validatedChanges });
 
     const results = [];
     const attemptedChanges = [];

@@ -285,7 +285,7 @@ class ProjectOperationReceiptStore {
   }
 
   // Pending intent files are intentionally retained after a receipt is committed.
-  // The verified receipt is authoritative; deleting by pathname after a separate
+  // A terminal receipt is authoritative; deleting by pathname after a separate
   // identity check would introduce a time-of-check/time-of-use race.
   read({ operationId, tenantId }) {
     // Reconciliation may read before any write has initialized this store.

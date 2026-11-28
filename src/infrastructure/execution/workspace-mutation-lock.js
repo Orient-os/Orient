@@ -123,7 +123,23 @@ function readOwner(lockPath, { allowIncomplete = false } = {}) {
       fail('Workspace lock owner record is not private', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
     }
     const raw = fs.readFileSync(descriptor, 'utf8');
-    if (allowIncomplete && raw.length === 0) return INCOMPLETE_OWNER;
+    if (allowIncomplete && raw.length === 0) {
+      const openedStats = fs.fstatSync(descriptor);
+      let pathStats;
+      try {
+        pathStats = fs.lstatSync(ownerPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          fail('Workspace owner metadata changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+        throw error;
+      }
+      if (!pathStats.isFile() || pathStats.isSymbolicLink() ||
+          pathStats.dev !== openedStats.dev || pathStats.ino !== openedStats.ino || pathStats.size !== 0) {
+        fail('Workspace owner metadata changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      }
+      return INCOMPLETE_OWNER;
+    }
     const owner = JSON.parse(raw);
     if (!owner || owner.version !== 1 ||
         typeof owner.token !== 'string' || !/^[a-f0-9-]{36}$/i.test(owner.token) ||

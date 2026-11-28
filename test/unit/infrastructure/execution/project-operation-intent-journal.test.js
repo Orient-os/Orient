@@ -79,3 +79,69 @@ test('pending intent rejects before-images whose digest does not match their rec
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('v3 intent records the before-image file type and permission mode', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-project-intent-v3-'));
+  const directory = path.join(root, 'receipts');
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const store = new ProjectOperationReceiptStore({ directory });
+  const changes = [{
+    action: 'update',
+    path: 'script.sh',
+    beforeExists: true,
+    beforeType: 'regular',
+    beforeMode: 0o755,
+    beforeContent: '#!/bin/sh\necho before\n',
+    beforeContentSha256: digest('#!/bin/sh\necho before\n'),
+    afterContentSha256: digest('#!/bin/sh\necho after\n')
+  }];
+  try {
+    const reserved = store.beginIntent({
+      operationId: 'journal-v3-operation',
+      tenantId: 'tenant-a',
+      workspaceId: digest('/workspace'),
+      changeSetHash: digest('change-set-v3'),
+      changes
+    });
+    assert.equal(reserved.created, true);
+    const intent = store.readIntent({ operationId: 'journal-v3-operation', tenantId: 'tenant-a' });
+    assert.equal(intent.version, 3);
+    assert.deepEqual(intent.changes, changes);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('v3 intent records an absent before-image without inventing file metadata', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-project-intent-v3-absent-'));
+  const directory = path.join(root, 'receipts');
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const store = new ProjectOperationReceiptStore({ directory });
+  const changes = [{
+    action: 'create',
+    path: 'new.txt',
+    beforeExists: false,
+    beforeType: 'absent',
+    beforeMode: null,
+    beforeContent: null,
+    beforeContentSha256: null,
+    afterContentSha256: digest('new file')
+  }];
+  try {
+    const reserved = store.beginIntent({
+      operationId: 'journal-v3-absent-operation',
+      tenantId: 'tenant-a',
+      workspaceId: digest('/workspace'),
+      changeSetHash: digest('change-set-absent'),
+      changes
+    });
+    assert.equal(reserved.intent.version, 3);
+    assert.deepEqual(
+      store.readIntent({ operationId: 'journal-v3-absent-operation', tenantId: 'tenant-a' }).changes,
+      changes
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -192,7 +192,7 @@ test('recovery resumes an identical durable decision staged before a process cra
       recoveredAt: '2026-11-28T00:00:00.000Z',
       owner: first.metadata
     };
-    await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\\n', { mode: 0o600 });
+    await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\n', { mode: 0o600 });
 
     const recovered = lock.recover({
       expectedToken: first.metadata.token,

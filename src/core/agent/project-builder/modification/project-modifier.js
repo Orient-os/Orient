@@ -268,6 +268,30 @@ class ProjectModifier {
       snapshots.push(await this.snapshot(change));
     }
 
+    // The snapshot is the durable recovery before-image. Recheck the proposal
+    // digest against those exact bytes so a writer racing validation cannot
+    // make the journal describe a different pre-mutation state.
+    for (let index = 0; index < validatedChanges.length; index += 1) {
+      const change = validatedChanges[index];
+      const snapshot = snapshots[index];
+      if (change.action === 'update') {
+        const snapshotHash = snapshot.existed
+          ? crypto.createHash('sha256').update(snapshot.content).digest('hex')
+          : null;
+        if (snapshotHash !== change.expectedContentSha256) {
+          const error = new Error(`Change precondition failed while capturing before-image: ${change.path}`);
+          error.code = 'CHANGE_PRECONDITION_FAILED';
+          error.expectedContentSha256 = change.expectedContentSha256;
+          error.actualContentSha256 = snapshotHash;
+          throw error;
+        }
+      } else if (snapshot.existed) {
+        const error = new Error(`Create precondition failed while capturing before-image: ${change.path}`);
+        error.code = 'CHANGE_PRECONDITION_FAILED';
+        throw error;
+      }
+    }
+
     if (beforeMutation !== null && typeof beforeMutation !== 'function') {
       throw new TypeError('beforeMutation must be a function when provided');
     }

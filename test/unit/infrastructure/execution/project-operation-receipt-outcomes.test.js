@@ -44,6 +44,12 @@ test('receipt store durably records a verified rollback as a terminal operation 
   });
   const result = {
     status: 'failed',
+    changeSet: {
+      changes: [
+        { action: 'update', path: 'settings.json', content: 'after' },
+        { action: 'create', path: 'new.txt', content: 'new' }
+      ]
+    },
     verification: { status: 'failed', failed: 1, passed: 0 },
     rollback: {
       rolledBack: true,

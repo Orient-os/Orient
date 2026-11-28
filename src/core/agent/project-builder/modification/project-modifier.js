@@ -282,6 +282,34 @@ class ProjectModifier {
     };
   }
 
+  async assertSnapshotUnchanged(change, snapshot) {
+    const exists = await this.workspace.exists(change.path);
+    if (change.action === 'create') {
+      if (exists) {
+        const error = new Error(`Create precondition changed before write: ${change.path}`);
+        error.code = 'CHANGE_PRECONDITION_FAILED';
+        throw error;
+      }
+      return;
+    }
+
+    if (!exists) {
+      const error = new Error(`Update target disappeared before write: ${change.path}`);
+      error.code = 'CHANGE_PRECONDITION_FAILED';
+      throw error;
+    }
+    const current = await this.workspace.readText(change.path);
+    const currentHash = crypto.createHash('sha256').update(current).digest('hex');
+    const snapshotHash = crypto.createHash('sha256').update(snapshot.content).digest('hex');
+    if (currentHash !== snapshotHash) {
+      const error = new Error(`Update target changed after before-image capture: ${change.path}`);
+      error.code = 'CHANGE_PRECONDITION_FAILED';
+      error.expectedContentSha256 = snapshotHash;
+      error.actualContentSha256 = currentHash;
+      throw error;
+    }
+  }
+
   async apply(changeSet, { beforeMutation = null } = {}) {
     if (
       !changeSet ||
@@ -333,6 +361,7 @@ class ProjectModifier {
         error.code = 'CHANGE_PRECONDITION_FAILED';
         throw error;
       }
+      await this.assertSnapshotUnchanged(change, snapshot);
     }
 
     if (beforeMutation !== null && typeof beforeMutation !== 'function') {
@@ -343,7 +372,9 @@ class ProjectModifier {
     const results = [];
     const attemptedChanges = [];
     try {
-      for (const change of validatedChanges) {
+      for (let index = 0; index < validatedChanges.length; index += 1) {
+        const change = validatedChanges[index];
+        await this.assertSnapshotUnchanged(change, snapshots[index]);
         attemptedChanges.push({
           path: change.path,
           afterSha256: crypto.createHash('sha256').update(change.content).digest('hex')

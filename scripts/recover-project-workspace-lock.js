@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const WorkspaceMutationLock = require('../src/infrastructure/execution/workspace-mutation-lock');
+const ProjectOperationReceiptStore = require('../src/infrastructure/execution/project-operation-receipt-store');
 
 function parseArgs(argv) {
   const values = new Map();
@@ -23,6 +24,12 @@ function parseArgs(argv) {
   return { values, flags };
 }
 
+function readPendingIntent(owner, lockDirectory) {
+  if (!owner?.operationId || !owner?.tenantId) return null;
+  const store = new ProjectOperationReceiptStore({ directory: path.dirname(lockDirectory) });
+  return store.readIntent({ operationId: owner.operationId, tenantId: owner.tenantId });
+}
+
 function required(values, name) {
   const value = values.get(name);
   if (!value || !value.trim()) throw new Error(name + ' is required');
@@ -38,7 +45,19 @@ async function main() {
 
   if (flags.has('--inspect')) {
     const owner = lock.inspect();
-    process.stdout.write(JSON.stringify({ locked: Boolean(owner), owner }, null, 2) + '\n');
+    let pendingIntent = null;
+    let pendingIntentError = null;
+    try {
+      pendingIntent = readPendingIntent(owner, lockDirectory);
+    } catch (error) {
+      pendingIntentError = { code: error.code || null, message: error.message };
+    }
+    process.stdout.write(JSON.stringify({
+      locked: Boolean(owner),
+      owner,
+      pendingIntent,
+      pendingIntentError
+    }, null, 2) + '\n');
     return;
   }
 
@@ -50,6 +69,11 @@ async function main() {
     operatorId: required(values, '--operator'),
     reason: required(values, '--reason')
   });
+  try {
+    result.pendingIntent = readPendingIntent(result.recovery.owner, lockDirectory);
+  } catch (error) {
+    result.pendingIntentError = { code: error.code || null, message: error.message };
+  }
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 

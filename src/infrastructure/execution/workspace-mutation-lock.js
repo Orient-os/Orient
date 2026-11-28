@@ -125,7 +125,7 @@ function readOwner(lockPath) {
         typeof owner.token !== 'string' || !/^[a-f0-9-]{36}$/i.test(owner.token) ||
         typeof owner.hostname !== 'string' || !owner.hostname ||
         typeof owner.bootId !== 'string' || !owner.bootId ||
-        typeof owner.pidNamespace !== 'string' || !/^pid:\\[\\d+\\]$/.test(owner.pidNamespace) ||
+        typeof owner.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(owner.pidNamespace) ||
         !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
         typeof owner.processStartIdentity !== 'string' ||
         ((owner.operationId === undefined) !== (owner.tenantId === undefined)) ||

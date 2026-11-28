@@ -62,7 +62,8 @@ async function main() {
   const lock = new WorkspaceMutationLock({ workspaceRoot, lockDirectory });
 
   if (flags.has('--inspect')) {
-    const owner = lock.inspect();
+    const classification = lock.classify();
+    const owner = classification.owner;
     let pendingIntent = null;
     let pendingIntentError = null;
     let receipt = null;
@@ -78,7 +79,8 @@ async function main() {
       receiptError = { code: error.code || null, message: error.message };
     }
     process.stdout.write(JSON.stringify({
-      locked: Boolean(owner),
+      locked: classification.state !== 'unlocked',
+      classification,
       owner,
       pendingIntent,
       pendingIntentError,

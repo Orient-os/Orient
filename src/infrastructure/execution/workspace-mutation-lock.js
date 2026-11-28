@@ -97,7 +97,10 @@ function assertLocalFilesystem(directory) {
   }
 }
 
-function readOwner(lockPath) {
+const MISSING_OWNER = Symbol('missing-owner');
+const INCOMPLETE_OWNER = Symbol('incomplete-owner');
+
+function readOwner(lockPath, { allowIncomplete = false } = {}) {
   const ownerPath = path.join(lockPath, 'owner.json');
   let descriptor;
   try {
@@ -120,6 +123,23 @@ function readOwner(lockPath) {
       fail('Workspace lock owner record is not private', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
     }
     const raw = fs.readFileSync(descriptor, 'utf8');
+    if (allowIncomplete && raw.length === 0) {
+      const openedStats = fs.fstatSync(descriptor);
+      let pathStats;
+      try {
+        pathStats = fs.lstatSync(ownerPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          fail('Workspace owner metadata changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+        throw error;
+      }
+      if (!pathStats.isFile() || pathStats.isSymbolicLink() ||
+          pathStats.dev !== openedStats.dev || pathStats.ino !== openedStats.ino || pathStats.size !== 0) {
+        fail('Workspace owner metadata changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      }
+      return INCOMPLETE_OWNER;
+    }
     const owner = JSON.parse(raw);
     if (!owner || owner.version !== 1 ||
         typeof owner.token !== 'string' || !/^[a-f0-9-]{36}$/i.test(owner.token) ||
@@ -139,6 +159,7 @@ function readOwner(lockPath) {
     return owner;
   } catch (error) {
     if (error.code === 'ENOENT') {
+      if (allowIncomplete) return MISSING_OWNER;
       fail('Workspace lock exists without a complete owner record; operator intervention is required', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
     }
     if (error.code === 'ELOOP') {
@@ -288,6 +309,73 @@ class WorkspaceMutationLock {
       fail('Workspace lock belongs to a different workspace identity', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
     }
     return owner;
+  }
+
+  classify() {
+    let directoryStats;
+    try {
+      directoryStats = fs.lstatSync(this.lockPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return { state: 'unlocked', reason: 'lock_absent', owner: null, recoveryRequired: false };
+      }
+      throw error;
+    }
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() ||
+        (typeof process.getuid === 'function' &&
+          (directoryStats.uid !== process.getuid() || (directoryStats.mode & 0o7777) !== 0o700))) {
+      fail('Workspace lock directory is not private and owned by the application user', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+    }
+
+    const owner = readOwner(this.lockPath, { allowIncomplete: true });
+    if (owner === MISSING_OWNER || owner === INCOMPLETE_OWNER) {
+      let currentDirectoryStats;
+      try {
+        currentDirectoryStats = fs.lstatSync(this.lockPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          fail('Workspace lock changed while it was being classified', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        }
+        throw error;
+      }
+      if (!currentDirectoryStats.isDirectory() || currentDirectoryStats.isSymbolicLink() ||
+          currentDirectoryStats.dev !== directoryStats.dev || currentDirectoryStats.ino !== directoryStats.ino) {
+        fail('Workspace lock identity changed during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      }
+      if (owner === MISSING_OWNER) {
+        try {
+          fs.lstatSync(path.join(this.lockPath, 'owner.json'));
+          fail('Workspace owner metadata appeared during classification', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          if (error.code === 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT') throw error;
+        }
+        return { state: 'recovery_required', reason: 'owner_metadata_missing', owner: null, recoveryRequired: true };
+      }
+      return { state: 'recovery_required', reason: 'owner_metadata_incomplete', owner: null, recoveryRequired: true };
+    }
+    if (owner.workspaceId !== this.workspaceId) {
+      fail('Workspace lock belongs to a different workspace identity', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+    }
+    if (owner.hostname !== os.hostname() || owner.bootId !== readBootId() ||
+        owner.pidNamespace !== readPidNamespace()) {
+      fail('Lock owner belongs to another host, boot, or PID namespace; its liveness is unknown',
+        'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN');
+    }
+
+    let processStartIdentity;
+    try {
+      processStartIdentity = readProcessStartIdentity(owner.pid);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return { state: 'recovery_required', reason: 'owner_process_missing', owner, recoveryRequired: true };
+      }
+      throw error;
+    }
+    if (processStartIdentity !== owner.processStartIdentity) {
+      return { state: 'recovery_required', reason: 'owner_process_replaced', owner, recoveryRequired: true };
+    }
+    return { state: 'locked', reason: 'owner_process_active', owner, recoveryRequired: false };
   }
 
   recover({ expectedToken, operatorId, reason } = {}) {

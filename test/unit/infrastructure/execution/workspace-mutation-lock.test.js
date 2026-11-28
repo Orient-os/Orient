@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const WorkspaceMutationLock = require('../../../../src/infrastructure/execution/workspace-mutation-lock');
 
@@ -116,6 +116,13 @@ test('a crashed owner leaves a fail-closed lock for explicit operator recovery',
     worker.kill('SIGKILL');
     await waitForExit(worker);
 
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const classification = lock.classify();
+    assert.equal(classification.state, 'recovery_required');
+    assert.equal(classification.reason, 'owner_process_missing');
+    assert.equal(classification.owner.token, first.metadata.token);
+    assert.equal(classification.recoveryRequired, true);
+
     const contender = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
     const second = await readFirstLine(contender);
     assert.equal(second.acquired, false);
@@ -140,6 +147,27 @@ test('different workspace identities are isolated even when they share lock stor
   } finally {
     if (second) await second.release();
     if (first) await first.release();
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a reused PID is classified as a dead recorded owner, not as the current owner', async () => {
+  const f = await fixture();
+  let lease;
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    lease = await lock.acquire();
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
+    owner.processStartIdentity = '0';
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
+
+    const classification = lock.classify();
+    assert.equal(classification.state, 'recovery_required');
+    assert.equal(classification.reason, 'owner_process_replaced');
+    assert.equal(classification.owner.token, lease.metadata.token);
+    assert.equal(classification.recoveryRequired, true);
+  } finally {
     await fs.rm(f.root, { recursive: true, force: true });
   }
 });
@@ -209,6 +237,10 @@ test('recovery refuses an owner recorded in a different PID namespace', async ()
     await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
 
     assert.throws(
+      () => lock.classify(),
+      { code: 'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN' }
+    );
+    assert.throws(
       () => lock.recover({
         expectedToken: first.metadata.token,
         operatorId: 'test-operator',
@@ -270,6 +302,199 @@ test('release refuses to remove a lock whose ownership token changed', async () 
       { code: 'PROJECT_WORKSPACE_LOCK_OWNERSHIP_LOST' }
     );
     await fs.access(lock.lockPath);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+
+
+function assertExistingCorruptionContract(lock) {
+  assert.throws(() => lock.inspect(), { code: 'PROJECT_WORKSPACE_LOCK_CORRUPT' });
+  // classify() deliberately throws for corrupt states; recovery_required is
+  // reserved for recognized incomplete or abandoned lock states only.
+  assert.throws(() => lock.classify(), { code: 'PROJECT_WORKSPACE_LOCK_CORRUPT' });
+}
+
+async function stopAndReap(child) {
+  if (!child) return;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+  }
+  await waitForExit(child);
+}
+
+test('inspection preserves the unlocked and valid-owner legacy contracts', async () => {
+  const f = await fixture();
+  let lease;
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    assert.equal(lock.inspect(), null);
+
+    const unlocked = lock.classify();
+    assert.equal(unlocked.state, 'unlocked');
+    assert.equal(unlocked.reason, 'lock_absent');
+    assert.equal(unlocked.owner, null);
+    assert.equal(unlocked.recoveryRequired, false);
+
+    lease = await lock.acquire();
+    assert.deepEqual(lock.inspect(), lease.metadata);
+
+    const active = lock.classify();
+    assert.equal(active.state, 'locked');
+    assert.equal(active.recoveryRequired, false);
+    assert.deepEqual(active.owner, lease.metadata);
+  } finally {
+    if (lease) await lease.release();
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('inspection classifies a lock directory without owner.json as recovery_required after an early crash', async () => {
+  const f = await fixture();
+  let contender;
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const before = await fs.lstat(lock.lockPath);
+    assert.equal(before.isDirectory(), true);
+    assert.equal(before.isSymbolicLink(), false);
+
+    const classification = lock.classify();
+    assert.equal(classification.state, 'recovery_required');
+    assert.equal(classification.reason, 'owner_metadata_missing');
+    assert.equal(classification.owner, null);
+    assert.equal(classification.recoveryRequired, true);
+
+    // inspect() deliberately retains its pre-existing corruption behavior;
+    // callers needing recovery classification use classify().
+    assert.throws(() => lock.inspect(), { code: 'PROJECT_WORKSPACE_LOCK_CORRUPT' });
+
+    contender = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const result = await readFirstLine(contender);
+    assert.equal(result.acquired, false);
+    assert.equal(result.code, 'PROJECT_WORKSPACE_MUTATION_LOCKED');
+    await waitForExit(contender);
+
+    const after = await fs.lstat(lock.lockPath);
+    assert.equal(after.isDirectory(), true);
+    assert.equal(after.isSymbolicLink(), false);
+    assert.equal(after.dev, before.dev);
+    assert.equal(after.ino, before.ino);
+  } finally {
+    await stopAndReap(contender);
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('operator inspection reports ownerless locks as locked and recovery_required', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const script = path.resolve(__dirname, '../../../../scripts/recover-project-workspace-lock.js');
+    const result = spawnSync(process.execPath, [
+      script,
+      '--workspace', f.workspaceRoot,
+      '--lock-directory', f.lockDirectory,
+      '--inspect'
+    ], { encoding: 'utf8' });
+
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.locked, true);
+    assert.equal(output.classification.state, 'recovery_required');
+    assert.equal(output.classification.reason, 'owner_metadata_missing');
+    assert.equal(output.owner, null);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('an empty owner.json is classified as incomplete initialization, not malformed JSON', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    await fs.writeFile(ownerPath, '', { mode: 0o600 });
+
+    const classification = lock.classify();
+    assert.equal(classification.state, 'recovery_required');
+    assert.equal(classification.reason, 'owner_metadata_incomplete');
+    assert.equal(classification.owner, null);
+    assert.equal(classification.recoveryRequired, true);
+    assert.throws(() => lock.inspect(), { code: 'PROJECT_WORKSPACE_LOCK_CORRUPT' });
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('malformed non-empty owner JSON remains corruption', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    await fs.writeFile(path.join(lock.lockPath, 'owner.json'), '{"version":', { mode: 0o600 });
+    assertExistingCorruptionContract(lock);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a symlinked owner.json remains corruption', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const target = path.join(f.root, 'owner-target.json');
+    await fs.writeFile(target, '{}', { mode: 0o600 });
+    await fs.symlink(target, path.join(lock.lockPath, 'owner.json'));
+    assertExistingCorruptionContract(lock);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('an owner.json with unsafe permissions remains corruption', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    await fs.writeFile(ownerPath, '{}', { mode: 0o600 });
+    await fs.chmod(ownerPath, 0o644);
+    assertExistingCorruptionContract(lock);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a valid owner record bound to another workspace remains a recovery conflict', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const lease = await lock.acquire();
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
+    owner.workspaceId = '0'.repeat(64);
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
+
+    assert.throws(() => lock.inspect(), { code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT' });
+    assert.throws(() => lock.classify(), { code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT' });
+    assert.equal(lease.metadata.workspaceId, lock.workspaceId);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('a lock directory with unsafe permissions remains corruption', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    await fs.mkdir(lock.lockPath, { mode: 0o700 });
+    await fs.chmod(lock.lockPath, 0o755);
+    assertExistingCorruptionContract(lock);
   } finally {
     await fs.rm(f.root, { recursive: true, force: true });
   }

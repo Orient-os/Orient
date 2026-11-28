@@ -2,6 +2,8 @@
 
 ## Scope
 
+This document covers only the receipt store's per-operation write lock at `<receipt>.json.lock/`. It does not describe the canonical workspace mutation lock. Workspace lock recovery must use the dedicated [Project Doctor workspace mutation lock recovery runbook](../runbooks/project-workspace-lock-recovery.md), which reconciles the before-image journal and commits a terminal receipt before releasing the workspace lock.
+
 The receipt store uses an atomic directory lock at:
 
 `<receipt-directory>/<sha256(tenantId + NUL + operationId)>.json.lock/`

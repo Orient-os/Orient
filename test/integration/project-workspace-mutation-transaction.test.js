@@ -24,7 +24,8 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
     const proposal = JSON.parse(process.argv[5]);
     (async () => {
       if (mode === 'holder') {
-        ProjectBuilderAgent.prototype.execute = async function () {
+        ProjectBuilderAgent.prototype.execute = async function (options) {
+          await options.beforeExecution();
           await fs.writeFile(path.join(root, proposal.path), proposal.content);
           process.stdout.write('MUTATED\\n');
           await new Promise(resolve => process.stdin.once('data', resolve));

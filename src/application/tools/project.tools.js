@@ -1,6 +1,5 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
-const os = require('node:os');
 const fs = require('node:fs');
 const WorkspaceMutationLock = require('../../infrastructure/execution/workspace-mutation-lock');
 const ToolInterface = require('../../core/tools/tool.interface');
@@ -83,10 +82,13 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         error.code = 'PROJECT_OPERATION_IDENTITY_REQUIRED';
         throw error;
       }
-      const lockDirectory = path.join(
-        operationReceiptStore?.directory || path.join(os.tmpdir(), 'orient-workspace-mutation-state'),
-        'workspace-locks'
-      );
+      if (!operationReceiptStore || typeof operationReceiptStore.directory !== 'string' ||
+          !operationReceiptStore.directory.trim()) {
+        const error = new Error('A private durable operation-receipt directory is required for workspace mutation locks');
+        error.code = 'PROJECT_WORKSPACE_LOCK_DIRECTORY_REQUIRED';
+        throw error;
+      }
+      const lockDirectory = path.join(operationReceiptStore.directory, 'workspace-locks');
       const mutationLock = new WorkspaceMutationLock({
         workspaceRoot: projectRoot,
         lockDirectory,

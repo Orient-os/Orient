@@ -80,7 +80,12 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         operationReceiptStore?.directory || path.join(os.tmpdir(), 'orient-workspace-mutation-state'),
         'workspace-locks'
       );
-      const mutationLock = new WorkspaceMutationLock({ workspaceRoot: projectRoot, lockDirectory });
+      const mutationLock = new WorkspaceMutationLock({
+        workspaceRoot: projectRoot,
+        lockDirectory,
+        operationId,
+        tenantId
+      });
       const workspaceLease = await mutationLock.acquire();
       let retainWorkspaceLock = false;
       let intentCreated = false;
@@ -153,10 +158,30 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
         checks,
         // Proposal validation runs while the workspace lock is held. Only then
         // do we persist the intent immediately before the first possible write.
-        beforeExecution: async () => {
+        beforeExecution: async ({ snapshots, changes }) => {
           if (!operationReceiptStore) return;
+          if (!Array.isArray(snapshots) || !Array.isArray(changes) ||
+              snapshots.length !== changes.length || changes.length !== proposals.length) {
+            const error = new Error('Project mutation before-image journal is incomplete');
+            error.code = 'PROJECT_OPERATION_INTENT_INVALID';
+            throw error;
+          }
+          const journalChanges = changes.map((change, index) => {
+            const snapshot = snapshots[index];
+            const beforeContent = snapshot.existed ? snapshot.content : null;
+            return {
+              action: change.action,
+              path: change.path,
+              beforeExists: snapshot.existed,
+              beforeContent,
+              beforeContentSha256: snapshot.existed
+                ? crypto.createHash('sha256').update(beforeContent).digest('hex')
+                : null,
+              afterContentSha256: crypto.createHash('sha256').update(change.content).digest('hex')
+            };
+          });
           const reservation = operationReceiptStore.beginIntent({
-            operationId, tenantId, workspaceId, changeSetHash
+            operationId, tenantId, workspaceId, changeSetHash, changes: journalChanges
           });
           intentCreated = reservation.created;
           if (!reservation.created) {

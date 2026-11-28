@@ -157,7 +157,7 @@ test('project change precondition blocks stale proposals after external mutation
   fs.writeFileSync(manifestPath, '{"name":"externally-modified"}\n');
 
   const executeTool = runtime.toolRegistry.get('project.execute_change');
-  const staleExecution = await executeTool.execute(proposal.result);
+  const staleExecution = await executeTool.execute(proposal.result, { operationId: 'stale-proposal-operation', tenantId: 'tenant-mission' });
   assert.equal(staleExecution.status, 'failed');
   assert.equal(
     staleExecution.error?.code,

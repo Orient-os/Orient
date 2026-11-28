@@ -25,7 +25,10 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
     (async () => {
       if (mode === 'holder') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
-          await options.beforeExecution();
+          await options.beforeExecution({
+            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            changes: [proposal]
+          });
           await fs.writeFile(path.join(root, proposal.path), proposal.content);
           process.stdout.write('MUTATED\\n');
           await new Promise(resolve => process.stdin.once('data', resolve));
@@ -39,7 +42,10 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
         };
       } else if (mode === 'rolledback') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
-          await options.beforeExecution();
+          await options.beforeExecution({
+            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            changes: [proposal]
+          });
           const result = {
             status: 'failed',
             rollback: {
@@ -55,7 +61,10 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
         };
       } else if (mode === 'rollback-failed') {
         ProjectBuilderAgent.prototype.execute = async function (options) {
-          await options.beforeExecution();
+          await options.beforeExecution({
+            snapshots: [{ path: proposal.path, existed: true, content: 'before' }],
+            changes: [proposal]
+          });
           const result = {
             status: 'rollback-failed',
             rollback: { rolledBack: false, rollbackErrors: [{ code: 'WORKSPACE_ROLLBACK_CONFLICT' }] }

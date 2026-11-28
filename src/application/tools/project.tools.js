@@ -90,8 +90,8 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       const mutationLock = new WorkspaceMutationLock({
         workspaceRoot: projectRoot,
         lockDirectory,
-        operationId,
-        tenantId
+        operationId: operationId && tenantId ? operationId : '',
+        tenantId: operationId && tenantId ? tenantId : ''
       });
       const workspaceLease = await mutationLock.acquire();
       let retainWorkspaceLock = false;

@@ -1101,3 +1101,24 @@ test('receipt commit ambiguity preserves the primary error across temporary-file
     assert.equal(fsSync.existsSync(store.receiptPath(input.operationId, input.tenantId) + '.lock'), false);
   });
 });
+
+
+test('project mutation refuses to derive its lock directory from the operating-system temp directory', async () => {
+  const root = fsSync.mkdtempSync(path.join(os.tmpdir(), 'orient-project-lock-config-'));
+  fsSync.mkdirSync(path.join(root, 'src'));
+  try {
+    const execute = createProjectTools({
+      projectRoot: root,
+      policy: { allowRead: true, allowWrite: true, allowCommands: false, allowGit: false }
+    }).find(tool => tool.name === 'project.execute_change');
+    await assert.rejects(
+      execute.execute({
+        proposals: [{ action: 'create', path: 'src/must-not-exist.txt', content: 'no implicit temp lock' }]
+      }),
+      error => error?.code === 'PROJECT_WORKSPACE_LOCK_DIRECTORY_REQUIRED'
+    );
+    assert.equal(fsSync.existsSync(path.join(root, 'src/must-not-exist.txt')), false);
+  } finally {
+    fsSync.rmSync(root, { recursive: true, force: true });
+  }
+});

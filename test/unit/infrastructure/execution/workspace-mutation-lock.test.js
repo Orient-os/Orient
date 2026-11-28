@@ -83,6 +83,25 @@ test('independent OS processes cannot own the same workspace mutation lock concu
   }
 });
 
+test('release atomically retires the lock while preserving owner evidence', async () => {
+  const f = await fixture();
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const lease = await lock.acquire();
+    const retiredPath = lock.lockPath + '.released.' + lease.metadata.token;
+
+    await lease.release();
+
+    await assert.rejects(fs.stat(lock.lockPath), { code: 'ENOENT' });
+    const retiredOwner = JSON.parse(await fs.readFile(path.join(retiredPath, 'owner.json'), 'utf8'));
+    assert.equal(retiredOwner.token, lease.metadata.token);
+    const nextLease = await lock.acquire();
+    await nextLease.release();
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('a crashed owner leaves a fail-closed lock for explicit operator recovery', async () => {
   const f = await fixture();
   let worker;

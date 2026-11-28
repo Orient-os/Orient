@@ -429,7 +429,7 @@ test('a valid owner record bound to another workspace remains a recovery conflic
     const ownerPath = path.join(lock.lockPath, 'owner.json');
     const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
     owner.workspaceId = '0'.repeat(64);
-    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\\n', { mode: 0o600 });
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
 
     assert.throws(() => lock.inspect(), { code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT' });
     assert.throws(() => lock.classify(), { code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT' });

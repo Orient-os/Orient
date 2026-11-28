@@ -52,6 +52,7 @@ function spawnToolWorker({ workspaceRoot, receiptDirectory, operationId, mode = 
           });
           const result = {
             status: 'failed',
+            changeSet: { changes: [proposal] },
             rollback: {
               rolledBack: true,
               restored: [{

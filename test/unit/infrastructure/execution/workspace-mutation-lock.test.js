@@ -176,6 +176,35 @@ test('recovery quarantines a confirmed dead process and preserves an operator re
   }
 });
 
+test('recovery refuses an owner recorded in a different PID namespace', async () => {
+  const f = await fixture();
+  let worker;
+  try {
+    worker = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory, hold: true });
+    const first = await readFirstLine(worker);
+    worker.kill('SIGKILL');
+    await waitForExit(worker);
+
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
+    owner.pidNamespace = 'pid:[999999]';
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
+
+    assert.throws(
+      () => lock.recover({
+        expectedToken: first.metadata.token,
+        operatorId: 'test-operator',
+        reason: 'must not inspect a PID in another namespace'
+      }),
+      { code: 'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN' }
+    );
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('recovery resumes an identical durable decision staged before a process crash', async () => {
   const f = await fixture();
   let worker;

@@ -110,6 +110,67 @@ async function persistIntent(f, changes) {
   });
 }
 
+
+function spawnRecoveryWorker({ workspaceRoot, lockDirectory, dataDirectory, expectedToken, mode }) {
+  const lockModule = path.resolve(__dirname, '../../../../src/infrastructure/execution/workspace-mutation-lock');
+  const recoveryModule = path.resolve(__dirname, '../../../../src/infrastructure/execution/project-workspace-recovery');
+  const storeModule = path.resolve(__dirname, '../../../../src/infrastructure/execution/project-operation-receipt-store');
+  const source = [
+    "const fs = require('node:fs');",
+    "const Lock = require(process.argv[1]);",
+    "const Recovery = require(process.argv[2]);",
+    "const Store = require(process.argv[3]);",
+    "if (process.argv[6] === 'pause-after-claim') {",
+    "  const original = Recovery.prototype.restore;",
+    "  Recovery.prototype.restore = function(input) {",
+    "    process.stdout.write('CLAIMED\\n');",
+    "    const byte = Buffer.alloc(1);",
+    "    fs.readSync(0, byte, 0, 1, null);",
+    "    return original.call(this, input);",
+    "  };",
+    "}",
+    "if (process.argv[6] === 'crash-before-receipt') {",
+    "  Store.prototype.write = function() {",
+    "    process.stdout.write('RESTORED\\n');",
+    "    process.kill(process.pid, 'SIGKILL');",
+    "  };",
+    "}",
+    "try {",
+    "  const lock = new Lock({ workspaceRoot: process.argv[4], lockDirectory: process.argv[5] });",
+    "  const receiptStore = new Store({ directory: process.argv[7] });",
+    "  lock.recover({ expectedToken: process.argv[8], operatorId: 'owner', reason: 'restartable recovery test', receiptStore });",
+    "  process.stdout.write('DONE\\n');",
+    "} catch (error) {",
+    "  process.stderr.write(JSON.stringify({ code: error.code || null, message: error.message }) + '\\n');",
+    "  process.exitCode = 2;",
+    "}"
+  ].join('\\n');
+  return spawn(process.execPath, [
+    '-e', source, lockModule, recoveryModule, storeModule,
+    workspaceRoot, lockDirectory, dataDirectory, expectedToken, mode
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+function waitForMarker(child, marker) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      if (output.includes(marker)) resolve(output);
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (!output.includes(marker)) {
+        reject(new Error('Recovery worker exited before marker ' + marker + '; code=' + code + '; signal=' + signal + '; stderr=' + stderr));
+      }
+    });
+  });
+}
+
 test('recovery restores before-images, preserves file modes, receipts rollback, then releases the lock', async () => {
   const f = await fixture();
   try {
@@ -144,6 +205,85 @@ test('recovery restores before-images, preserves file modes, receipts rollback, 
     ]);
     assert.equal(lock.classify().state, 'unlocked');
   } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+
+test('independent recovery processes cannot enter the same live recovery claim', async () => {
+  const f = await fixture();
+  let owner;
+  let worker;
+  try {
+    const target = path.join(f.workspaceRoot, 'concurrent.txt');
+    await fs.writeFile(target, 'before\\n', { mode: 0o600 });
+    await persistIntent(f, [updateChange('concurrent.txt', 'before\\n', 'after\\n', 0o600)]);
+    await fs.writeFile(target, 'after\\n', { mode: 0o600 });
+    owner = await createAbandonedLock(f);
+    worker = spawnRecoveryWorker({
+      workspaceRoot: f.workspaceRoot,
+      lockDirectory: f.lockDirectory,
+      dataDirectory: path.dirname(f.lockDirectory),
+      expectedToken: owner.token,
+      mode: 'pause-after-claim'
+    });
+    await waitForMarker(worker, 'CLAIMED\\n');
+
+    const lock = lockFor(f);
+    assert.throws(() => lock.recover({
+      expectedToken: owner.token,
+      operatorId: 'owner',
+      reason: 'restartable recovery test',
+      receiptStore: f.receiptStore
+    }), { code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_IN_PROGRESS' });
+
+    worker.stdin.write('continue');
+    worker.stdin.end();
+    await waitForExit(worker);
+    assert.equal(worker.exitCode, 0);
+    assert.equal(await fs.readFile(target, 'utf8'), 'before\\n');
+    assert.equal(lock.classify().state, 'unlocked');
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test('recovery resumes after a process crash between before-image restoration and receipt commit', async () => {
+  const f = await fixture();
+  let worker;
+  try {
+    const target = path.join(f.workspaceRoot, 'restart.txt');
+    await fs.writeFile(target, 'before\\n', { mode: 0o640 });
+    await persistIntent(f, [updateChange('restart.txt', 'before\\n', 'after\\n', 0o640)]);
+    await fs.writeFile(target, 'after\\n', { mode: 0o640 });
+    const owner = await createAbandonedLock(f);
+
+    worker = spawnRecoveryWorker({
+      workspaceRoot: f.workspaceRoot,
+      lockDirectory: f.lockDirectory,
+      dataDirectory: path.dirname(f.lockDirectory),
+      expectedToken: owner.token,
+      mode: 'crash-before-receipt'
+    });
+    await waitForMarker(worker, 'RESTORED\\n');
+    await waitForExit(worker);
+    assert.equal(worker.signalCode, 'SIGKILL');
+    assert.equal(await fs.readFile(target, 'utf8'), 'before\\n');
+    assert.equal(f.receiptStore.read({ operationId: OPERATION_ID, tenantId: TENANT_ID }), null);
+
+    const lock = lockFor(f);
+    const resumed = lock.recover({
+      expectedToken: owner.token,
+      operatorId: 'owner',
+      reason: 'restartable recovery test',
+      receiptStore: f.receiptStore
+    });
+    assert.equal(resumed.outcome, 'rolled_back');
+    assert.equal(f.receiptStore.read({ operationId: OPERATION_ID, tenantId: TENANT_ID }).outcome, 'rolled_back');
+    assert.equal(lock.classify().state, 'unlocked');
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
     await fs.rm(f.root, { recursive: true, force: true });
   }
 });

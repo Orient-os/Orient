@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const WorkspaceMutationLock = require('../../../../src/infrastructure/execution/workspace-mutation-lock');
+const ProjectOperationReceiptStore = require('../../../../src/infrastructure/execution/project-operation-receipt-store');
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orient-workspace-lock-'));
@@ -192,7 +193,7 @@ test('recovery refuses a live owner and requires an explicit operator decision',
   }
 });
 
-test('recovery quarantines a confirmed dead process and preserves an operator receipt', async () => {
+test('recovery refuses to release a dead-owner lock without an operation before-image journal', async () => {
   const f = await fixture();
   let worker;
   try {
@@ -200,21 +201,17 @@ test('recovery quarantines a confirmed dead process and preserves an operator re
     const first = await readFirstLine(worker);
     assert.equal(first.acquired, true);
     worker.kill('SIGKILL');
-    await new Promise(resolve => worker.once('exit', resolve));
+    await waitForExit(worker);
 
     const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
-    const recovered = lock.recover({
+    const receiptStore = new ProjectOperationReceiptStore({ directory: path.join(f.root, 'receipts') });
+    assert.throws(() => lock.recover({
       expectedToken: first.metadata.token,
       operatorId: 'incident-operator',
-      reason: 'worker process was terminated and workspace was reviewed'
-    });
-    assert.equal(recovered.recovered, true);
-    const record = JSON.parse(await fs.readFile(path.join(recovered.quarantinePath, 'recovery.json'), 'utf8'));
-    assert.equal(record.operatorId, 'incident-operator');
-    assert.equal(record.owner.token, first.metadata.token);
-
-    const nextLease = await lock.acquire();
-    await nextLease.release();
+      reason: 'no durable before-image journal exists',
+      receiptStore
+    }), { code: 'PROJECT_OPERATION_INTENT_REQUIRED' });
+    assert.equal(lock.classify().state, 'recovery_required');
   } finally {
     if (worker && worker.exitCode === null) worker.kill('SIGKILL');
     await fs.rm(f.root, { recursive: true, force: true });
@@ -254,7 +251,7 @@ test('recovery refuses an owner recorded in a different PID namespace', async ()
   }
 });
 
-test('recovery resumes an identical durable decision staged before a process crash', async () => {
+test('a staged recovery decision cannot release a lock without its durable before-image journal', async () => {
   const f = await fixture();
   let worker;
   try {
@@ -272,16 +269,17 @@ test('recovery resumes an identical durable decision staged before a process cra
       owner: first.metadata
     };
     await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\n', { mode: 0o600 });
+    const receiptStore = new ProjectOperationReceiptStore({ directory: path.join(f.root, 'receipts') });
 
-    const recovered = lock.recover({
+    assert.throws(() => lock.recover({
       expectedToken: first.metadata.token,
       operatorId: staged.operatorId,
-      reason: staged.reason
-    });
-    assert.equal(recovered.recovered, true);
-    assert.equal(recovered.recovery.recoveredAt, staged.recoveredAt);
-    const durable = JSON.parse(await fs.readFile(path.join(recovered.quarantinePath, 'recovery.json'), 'utf8'));
-    assert.equal(durable.owner.token, first.metadata.token);
+      reason: staged.reason,
+      receiptStore
+    }), { code: 'PROJECT_OPERATION_INTENT_REQUIRED' });
+    const durable = JSON.parse(await fs.readFile(path.join(lock.lockPath, 'recovery.json'), 'utf8'));
+    assert.equal(durable.recoveredAt, staged.recoveredAt);
+    assert.equal(lock.classify().state, 'recovery_required');
   } finally {
     if (worker && worker.exitCode === null) worker.kill('SIGKILL');
     await fs.rm(f.root, { recursive: true, force: true });

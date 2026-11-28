@@ -93,10 +93,14 @@ async function main() {
   if (required(values, '--confirm-recovery') !== 'RECOVER-WORKSPACE-LOCK') {
     throw new Error('Recovery requires --confirm-recovery RECOVER-WORKSPACE-LOCK');
   }
+  const receiptStore = new ProjectOperationReceiptStore({
+    directory: path.dirname(lockDirectory)
+  });
   const result = lock.recover({
     expectedToken: required(values, '--expected-token'),
     operatorId: required(values, '--operator'),
-    reason: required(values, '--reason')
+    reason: required(values, '--reason'),
+    receiptStore
   });
   try {
     result.pendingIntent = readPendingIntent(result.recovery.owner, lockDirectory);

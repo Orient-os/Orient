@@ -107,8 +107,9 @@ function matchesVerifiedJournal(result, changes) {
       const item = applied[index];
       return item?.action === change.action &&
         item.path === change.path &&
-        typeof item.content === 'string' &&
-        digest(item.content) === change.afterContentSha256;
+        (typeof item.content === 'string'
+          ? digest(item.content) === change.afterContentSha256
+          : item.afterContentSha256 === change.afterContentSha256);
     });
 }
 

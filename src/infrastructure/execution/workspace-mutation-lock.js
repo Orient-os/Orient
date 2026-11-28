@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const ensurePrivateStorageDirectory = require('../filesystem/private-storage-directory');
+const ProjectWorkspaceRecovery = require('./project-workspace-recovery');
 
 function fail(message, code) {
   const error = new Error(message);
@@ -147,7 +148,7 @@ function readOwner(lockPath, { allowIncomplete = false } = {}) {
         typeof owner.bootId !== 'string' || !owner.bootId ||
         typeof owner.pidNamespace !== 'string' || !/^pid:\[\d+\]$/.test(owner.pidNamespace) ||
         !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
-        typeof owner.processStartIdentity !== 'string' ||
+        typeof owner.processStartIdentity !== 'string' || !/^\d+$/.test(owner.processStartIdentity) ||
         ((owner.operationId === undefined) !== (owner.tenantId === undefined)) ||
         (owner.operationId !== undefined &&
           (typeof owner.operationId !== 'string' || !owner.operationId || owner.operationId.length > 256 ||
@@ -171,6 +172,233 @@ function readOwner(lockPath, { allowIncomplete = false } = {}) {
     throw error;
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+
+function readPrivateJson(filePath, { maxBytes = 8192, allowTwoLinks = false, code = 'PROJECT_WORKSPACE_LOCK_CORRUPT', label = 'Workspace recovery record' } = {}) {
+  let fd;
+  try {
+    if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+      fail('Safe recovery metadata reads are unsupported on this platform', 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM');
+    }
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.nlink !== 1 && !(allowTwoLinks && stats.nlink === 2) ||
+        stats.size > maxBytes ||
+        (typeof process.getuid === 'function' &&
+          (stats.uid !== process.getuid() || (stats.mode & 0o7777) !== 0o600))) {
+      fail(label + ' is unsafe', code);
+    }
+    const before = fs.fstatSync(fd);
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = fs.readSync(fd, buffer, total, buffer.length - total, total);
+      if (count === 0) break;
+      total += count;
+    }
+    const after = fs.fstatSync(fd);
+    if (total > maxBytes || before.dev !== after.dev || before.ino !== after.ino ||
+        before.size !== after.size || total !== after.size) {
+      fail(label + ' changed while being read or exceeds its size limit', code);
+    }
+    const raw = buffer.subarray(0, total).toString('utf8');
+    if (!Buffer.from(raw, 'utf8').equals(buffer.subarray(0, total))) {
+      fail(label + ' is not valid UTF-8', code);
+    }
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error.code === 'ELOOP') fail(label + ' must not be a symbolic link', code);
+    if (error instanceof SyntaxError) fail(label + ' is corrupt JSON', code);
+    throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function claimProcessState(claim) {
+  const processOwner = claim.process;
+  if (processOwner.hostname !== os.hostname() ||
+      processOwner.bootId !== readBootId() ||
+      processOwner.pidNamespace !== readPidNamespace()) {
+    fail('Recovery claim belongs to another host, boot, or PID namespace',
+      'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN');
+  }
+  try {
+    const current = readProcessStartIdentity(processOwner.pid);
+    return current === processOwner.processStartIdentity ? 'active' : 'dead';
+  } catch (error) {
+    if (error.code === 'ENOENT') return 'dead';
+    throw error;
+  }
+}
+
+function validateRecoveryClaim(claim, parentToken, workspaceId) {
+  if (!claim || claim.version !== 1 || claim.parentToken !== parentToken ||
+      typeof claim.token !== 'string' || !/^[a-f0-9-]{36}$/i.test(claim.token) ||
+      claim.workspaceId !== workspaceId ||
+      !claim.process || typeof claim.process.hostname !== 'string' ||
+      typeof claim.process.bootId !== 'string' ||
+      typeof claim.process.pidNamespace !== 'string' ||
+      !/^pid:\[\d+\]$/.test(claim.process.pidNamespace) ||
+      !Number.isSafeInteger(claim.process.pid) || claim.process.pid < 1 ||
+      typeof claim.process.processStartIdentity !== 'string' || !/^\d+$/.test(claim.process.processStartIdentity)) {
+    fail('Workspace recovery claim is malformed or belongs to another operation',
+      'PROJECT_WORKSPACE_LOCK_CORRUPT');
+  }
+}
+
+function acquireRecoveryClaim(lockPath, owner, workspaceId) {
+  let parentToken = owner.token;
+  for (let generation = 0; generation < 64; generation += 1) {
+    const claimPath = path.join(lockPath,
+      'recovery.claim.' + crypto.createHash('sha256').update(parentToken, 'utf8').digest('hex') + '.json');
+    let existing;
+    try {
+      existing = readPrivateJson(claimPath, {
+        maxBytes: 4096,
+        allowTwoLinks: true,
+        code: 'PROJECT_WORKSPACE_LOCK_CORRUPT',
+        label: 'Workspace recovery claim'
+      });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+
+    if (existing) {
+      validateRecoveryClaim(existing, parentToken, workspaceId);
+      if (claimProcessState(existing) === 'active') {
+        fail('Another process currently owns the exclusive workspace recovery claim',
+          'PROJECT_WORKSPACE_LOCK_RECOVERY_IN_PROGRESS');
+      }
+      parentToken = existing.token;
+      continue;
+    }
+
+    const token = crypto.randomUUID();
+    const claim = {
+      version: 1,
+      workspaceId,
+      parentToken,
+      token,
+      process: {
+        hostname: os.hostname(),
+        bootId: readBootId(),
+        pidNamespace: readPidNamespace(),
+        pid: process.pid,
+        processStartIdentity: readProcessStartIdentity('self')
+      },
+      acquiredAt: new Date().toISOString()
+    };
+    const temporaryPath = path.join(lockPath, '.recovery-claim-' + token + '.tmp');
+    let fd;
+    try {
+      fd = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify(claim) + '\n', 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      try {
+        // Hard-link publication is atomic and never replaces a successor claim.
+        fs.linkSync(temporaryPath, claimPath);
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        fs.unlinkSync(temporaryPath);
+        continue;
+      }
+      fs.unlinkSync(temporaryPath);
+      syncDirectory(lockPath);
+      return { claim, claimPath };
+    } catch (error) {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch {}
+      }
+      throw error;
+    }
+  }
+  fail('Workspace recovery claim history exceeds the supported generation limit',
+    'PROJECT_WORKSPACE_LOCK_RECOVERY_GENERATION_LIMIT');
+}
+
+function assertRecoveryClaim(claimPath, expectedClaim) {
+  const current = readPrivateJson(claimPath, {
+    maxBytes: 4096,
+    allowTwoLinks: true,
+    code: 'PROJECT_WORKSPACE_LOCK_RECOVERY_CLAIM_LOST',
+    label: 'Workspace recovery claim'
+  });
+  if (current.token !== expectedClaim.token ||
+      current.parentToken !== expectedClaim.parentToken ||
+      current.workspaceId !== expectedClaim.workspaceId ||
+      current.process.pid !== process.pid ||
+      current.process.processStartIdentity !== expectedClaim.process.processStartIdentity) {
+    fail('Workspace recovery claim ownership changed', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CLAIM_LOST');
+  }
+}
+
+function releaseRecoveryClaim(claimPath, expectedClaim, lockPath) {
+  try {
+    assertRecoveryClaim(claimPath, expectedClaim);
+    fs.unlinkSync(claimPath);
+    syncDirectory(lockPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+function stageRecoveryDecision(lockPath, owner, operatorId, reason) {
+  const recoveryPath = path.join(lockPath, 'recovery.json');
+  try {
+    const existing = readPrivateJson(recoveryPath, {
+      maxBytes: 8192,
+      allowTwoLinks: true,
+      code: 'PROJECT_WORKSPACE_LOCK_CORRUPT',
+      label: 'Workspace recovery decision'
+    });
+    if (existing.version !== 1 || existing.owner?.token !== owner.token ||
+        existing.owner?.workspaceId !== owner.workspaceId ||
+        existing.operatorId !== operatorId || existing.reason !== reason ||
+        typeof existing.recoveredAt !== 'string') {
+      fail('A different workspace recovery decision is already staged',
+        'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+    }
+    return existing;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+
+  const recovery = {
+    version: 1,
+    operatorId,
+    reason,
+    recoveredAt: new Date().toISOString(),
+    owner
+  };
+  const token = crypto.randomUUID();
+  const temporaryPath = path.join(lockPath, '.recovery-decision-' + token + '.tmp');
+  let fd;
+  try {
+    fd = fs.openSync(temporaryPath, 'wx', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(recovery, null, 2) + '\n', 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    try {
+      fs.linkSync(temporaryPath, recoveryPath);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      fs.unlinkSync(temporaryPath);
+      return stageRecoveryDecision(lockPath, owner, operatorId, reason);
+    }
+    fs.unlinkSync(temporaryPath);
+    syncDirectory(lockPath);
+    return recovery;
+  } catch (error) {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    throw error;
   }
 }
 
@@ -378,19 +606,22 @@ class WorkspaceMutationLock {
     return { state: 'locked', reason: 'owner_process_active', owner, recoveryRequired: false };
   }
 
-  recover({ expectedToken, operatorId, reason } = {}) {
+  recover({ expectedToken, operatorId, reason, receiptStore } = {}) {
     if (typeof expectedToken !== 'string' || !expectedToken ||
         typeof operatorId !== 'string' || !operatorId.trim() || operatorId.length > 128 ||
         typeof reason !== 'string' || !reason.trim() || reason.length > 1024) {
-      fail('Explicit lock recovery requires expectedToken, operatorId, and reason', 'PROJECT_WORKSPACE_LOCK_RECOVERY_INPUT_INVALID');
+      fail('Explicit lock recovery requires expectedToken, operatorId, and reason',
+        'PROJECT_WORKSPACE_LOCK_RECOVERY_INPUT_INVALID');
     }
     const owner = readOwner(this.lockPath);
     if (owner.token !== expectedToken || owner.workspaceId !== this.workspaceId) {
-      fail('Workspace lock identity changed; refusing recovery', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
+      fail('Workspace lock identity changed; refusing recovery',
+        'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
     }
     if (owner.hostname !== os.hostname() || owner.bootId !== readBootId() ||
         owner.pidNamespace !== readPidNamespace()) {
-      fail('Lock owner belongs to another host or boot session; automatic recovery is unsafe', 'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN');
+      fail('Lock owner belongs to another host, boot, or PID namespace; its liveness is unknown',
+        'PROJECT_WORKSPACE_LOCK_OWNER_UNKNOWN');
     }
 
     let currentStartIdentity;
@@ -401,79 +632,65 @@ class WorkspaceMutationLock {
       else throw error;
     }
     if (currentStartIdentity === owner.processStartIdentity) {
-      fail('The recorded owner process is still alive; stop it normally before recovery', 'PROJECT_WORKSPACE_LOCK_OWNER_ACTIVE');
-    }
-    if (currentStartIdentity !== null) {
-      // A reused PID is not the recorded owner; start-time identity proves
-      // that the original process no longer owns this lock.
+      fail('The recorded owner process is still alive; stop it normally before recovery',
+        'PROJECT_WORKSPACE_LOCK_OWNER_ACTIVE');
     }
 
-    let recovery = {
-      version: 1,
-      operatorId: operatorId.trim(),
-      reason: reason.trim(),
-      recoveredAt: new Date().toISOString(),
-      owner
-    };
-    const recoveryPath = path.join(this.lockPath, 'recovery.json');
-    let recoveryDescriptor;
+    if (!receiptStore) {
+      fail('Durable operation receipt storage is required for workspace recovery',
+        'PROJECT_OPERATION_RECEIPT_STORE_REQUIRED');
+    }
+
+    const claim = acquireRecoveryClaim(this.lockPath, owner, this.workspaceId);
+    let completed = false;
+    let primaryError;
     try {
-      recoveryDescriptor = fs.openSync(
-        recoveryPath,
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
-        0o600
+      const recovery = stageRecoveryDecision(
+        this.lockPath,
+        owner,
+        operatorId.trim(),
+        reason.trim()
       );
-      fs.writeFileSync(recoveryDescriptor, JSON.stringify(recovery, null, 2) + '\n', 'utf8');
-      fs.fsyncSync(recoveryDescriptor);
-      fs.closeSync(recoveryDescriptor);
-      recoveryDescriptor = undefined;
-    } catch (error) {
-      if (recoveryDescriptor !== undefined) {
-        try { fs.closeSync(recoveryDescriptor); } catch {}
-      }
-      if (error.code !== 'EEXIST') throw error;
+      const assertClaim = () => assertRecoveryClaim(claim.claimPath, claim.claim);
+      const operation = new ProjectWorkspaceRecovery({
+        workspaceRoot: this.workspaceRoot,
+        receiptStore,
+        assertClaim
+      }).restore({
+        owner,
+        operatorId: operatorId.trim(),
+        reason: reason.trim()
+      });
 
-      // A previous recovery attempt may have durably staged this exact record
-      // before crashing prior to the directory rename. Resume only the same
-      // operator decision; never replace or discard staged evidence.
-      let existingDescriptor;
-      try {
-        existingDescriptor = fs.openSync(recoveryPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        const stats = fs.fstatSync(existingDescriptor);
-        if (!stats.isFile() || stats.nlink !== 1 || stats.size > 8192 ||
-            (typeof process.getuid === 'function' &&
-              (stats.uid !== process.getuid() || (stats.mode & 0o7777) !== 0o600))) {
-          fail('Staged workspace recovery record is unsafe', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
+      assertClaim();
+      const quarantinePath = this.lockPath + '.quarantine.' + crypto.randomUUID();
+      fs.renameSync(this.lockPath, quarantinePath);
+      syncDirectory(this.lockDirectory);
+      completed = true;
+      return {
+        recovered: true,
+        quarantinePath,
+        recovery,
+        outcome: operation.outcome,
+        receipt: operation.receipt
+      };
+    } catch (error) {
+      primaryError = error;
+      throw error;
+    } finally {
+      if (!completed) {
+        try {
+          releaseRecoveryClaim(claim.claimPath, claim.claim, this.lockPath);
+        } catch (cleanupError) {
+          if (primaryError) {
+            if (!Array.isArray(primaryError.cleanupErrors)) primaryError.cleanupErrors = [];
+            primaryError.cleanupErrors.push(cleanupError);
+          } else {
+            throw cleanupError;
+          }
         }
-        const existing = JSON.parse(fs.readFileSync(existingDescriptor, 'utf8'));
-        if (existing?.version !== 1 ||
-            existing?.owner?.token !== owner.token ||
-            existing?.operatorId !== operatorId.trim() ||
-            existing?.reason !== reason.trim()) {
-          fail('A different workspace recovery decision is already staged', 'PROJECT_WORKSPACE_LOCK_RECOVERY_CONFLICT');
-        }
-        recovery = existing;
-      } catch (readError) {
-        if (readError.code === 'ELOOP') {
-          fail('Staged workspace recovery record must not be a symbolic link', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
-        }
-        if (readError instanceof SyntaxError) {
-          fail('Staged workspace recovery record is corrupt', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
-        }
-        throw readError;
-      } finally {
-        if (existingDescriptor !== undefined) fs.closeSync(existingDescriptor);
       }
     }
-    syncDirectory(this.lockPath);
-
-    // The durable operator record is written while the active lock path still
-    // exists. The atomic rename is the final step, so a crash cannot expose an
-    // unlocked workspace before its recovery evidence is durable.
-    const quarantinePath = this.lockPath + '.quarantine.' + crypto.randomUUID();
-    fs.renameSync(this.lockPath, quarantinePath);
-    syncDirectory(this.lockDirectory);
-    return { recovered: true, quarantinePath, recovery };
   }
 }
 

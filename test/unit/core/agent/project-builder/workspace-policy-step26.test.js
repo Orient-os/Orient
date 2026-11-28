@@ -10,6 +10,19 @@ const WorkspacePolicy =
 const FileWorkspace =
   require('../../../../../src/core/agent/project-builder/workspace/file-workspace');
 
+function readRegularFileMode(target) {
+  const flags = fs.constants.O_RDONLY |
+    (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(target, flags);
+  try {
+    const stats = fs.fstatSync(fd);
+    assert.equal(stats.isFile(), true);
+    return stats.mode & 0o777;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function makePolicy(root) {
   return new WorkspacePolicy({
     allowedRoot: root,
@@ -176,7 +189,7 @@ test('writeFile preserves existing regular-file permissions across atomic replac
     fs.chmodSync(target, 0o755);
     const policy = makePolicy(root);
     policy.writeFile('executable.sh', '#!/bin/sh\necho after\n');
-    assert.equal(fs.statSync(target).mode & 0o777, 0o755);
+    assert.equal(readRegularFileMode(target), 0o755);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -204,10 +217,10 @@ test('ProjectModifier rollback preserves the original file permissions', async (
         assert.equal(snapshots[0].mode, 0o644);
       }
     });
-    assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+    assert.equal(readRegularFileMode(target), 0o644);
     await modifier.rollback(modification);
     assert.equal(fs.readFileSync(target, 'utf8'), '{"state":"before"}\n');
-    assert.equal(fs.statSync(target).mode & 0o777, 0o644);
+    assert.equal(readRegularFileMode(target), 0o644);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

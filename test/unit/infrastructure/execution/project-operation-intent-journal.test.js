@@ -22,6 +22,8 @@ test('pending project intent durably preserves bounded before-images and expecte
       action: 'update',
       path: 'config.json',
       beforeExists: true,
+      beforeType: 'regular',
+      beforeMode: 0o644,
       beforeContent: '{"mode":"old"}\n',
       beforeContentSha256: digest('{"mode":"old"}\n'),
       afterContentSha256: digest('{"mode":"new"}\n')
@@ -30,6 +32,8 @@ test('pending project intent durably preserves bounded before-images and expecte
       action: 'create',
       path: 'new.txt',
       beforeExists: false,
+      beforeType: 'absent',
+      beforeMode: null,
       beforeContent: null,
       beforeContentSha256: null,
       afterContentSha256: digest('new file')
@@ -171,6 +175,64 @@ test('v3 intent records an absent before-image without inventing file metadata',
       store.readIntent({ operationId: 'journal-v3-absent-operation', tenantId: 'tenant-a' }).changes,
       changes
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('legacy v1 intent remains readable but has no before-image journal', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-project-intent-v1-'));
+  const directory = path.join(root, 'receipts');
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const store = new ProjectOperationReceiptStore({ directory });
+  try {
+    const reserved = store.beginIntent({
+      operationId: 'legacy-v1-operation',
+      tenantId: 'tenant-a',
+      workspaceId: digest('/workspace'),
+      changeSetHash: digest('legacy-v1-change-set')
+    });
+    assert.equal(reserved.intent.version, 1);
+    assert.equal(store.readIntent({ operationId: 'legacy-v1-operation', tenantId: 'tenant-a' }).version, 1);
+    assert.equal(store.readIntent({ operationId: 'legacy-v1-operation', tenantId: 'tenant-a' }).changes, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('v3 intent rejects unsupported file types and permission modes', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orient-project-intent-v3-invalid-'));
+  const directory = path.join(root, 'receipts');
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const store = new ProjectOperationReceiptStore({ directory });
+  const base = {
+    action: 'update',
+    path: 'config.json',
+    beforeExists: true,
+    beforeType: 'regular',
+    beforeMode: 0o644,
+    beforeContent: 'before',
+    beforeContentSha256: digest('before'),
+    afterContentSha256: digest('after')
+  };
+  try {
+    for (const invalid of [
+      { ...base, beforeType: 'symlink' },
+      { ...base, beforeMode: 0o1000 },
+      { ...base, beforeMode: -1 }
+    ]) {
+      assert.throws(
+        () => store.beginIntent({
+          operationId: 'invalid-v3-' + String(invalid.beforeType) + '-' + String(invalid.beforeMode),
+          tenantId: 'tenant-a',
+          workspaceId: digest('/workspace'),
+          changeSetHash: digest('invalid-v3'),
+          changes: [invalid]
+        }),
+        { code: 'PROJECT_OPERATION_INTENT_INVALID' }
+      );
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -265,6 +265,7 @@ test('high-risk crash after side effect does not execute the side effect twice',
 
   runtime.shutdown({ cancelQueued: false });
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(path.join(path.dirname(root), path.basename(root) + '.orient-agent-data'), { recursive: true, force: true });
 });
 
 
@@ -329,5 +330,6 @@ test('concurrent resume attempts are serialized by the durable lease', async t =
     runtimeA.shutdown({ cancelQueued: false });
     runtimeB.shutdown({ cancelQueued: false });
     fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(path.join(path.dirname(root), path.basename(root) + '.orient-agent-data'), { recursive: true, force: true });
   }
 });

@@ -9,6 +9,10 @@ const ProjectImprovementAnalyzer = require('../../core/agent/project-builder/cha
 const CommandRunner = require('../../core/agent/project-builder/workspace/command-runner');
 const CommandVerification = require('../../core/agent/project-builder/verification/command-verification');
 
+const MAX_PROJECT_CHANGES = 10;
+const MAX_PROJECT_CHANGE_BYTES = 32 * 1024;
+const MAX_PROJECT_CHANGE_SET_BYTES = 256 * 1024;
+
 function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = null } = {}) {
   if (!projectRoot || typeof projectRoot !== 'string') throw new TypeError('projectRoot is required');
   const readOnlyPolicy = { ...policy, allowRead: true, allowWrite: false, allowCommands: false, allowGit: false };
@@ -41,7 +45,36 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
     effects: 'local_mutation',
     idempotency: 'reconcilable',
     execute: async (input = {}, context = {}) => {
-      const proposalResult = input && input.proposals ? input : input;
+      const proposalResult = input && typeof input === 'object' ? input : {};
+      const proposals = Array.isArray(proposalResult.proposals) ? proposalResult.proposals : [];
+      if (proposals.length === 0) throw new Error('No approved change proposals were supplied');
+      if (proposals.length > MAX_PROJECT_CHANGES) {
+        const error = new Error('Project change set exceeds the maximum number of files');
+        error.code = 'PROJECT_CHANGE_SET_TOO_LARGE';
+        throw error;
+      }
+      let totalChangeBytes = 0;
+      for (const proposal of proposals) {
+        if (!proposal || typeof proposal !== 'object' ||
+            typeof proposal.path !== 'string' || proposal.path.length > 512 ||
+            typeof proposal.content !== 'string') {
+          const error = new Error('Project change proposal exceeds the permitted shape');
+          error.code = 'PROJECT_CHANGE_PROPOSAL_INVALID';
+          throw error;
+        }
+        const bytes = Buffer.byteLength(proposal.content, 'utf8');
+        if (bytes > MAX_PROJECT_CHANGE_BYTES) {
+          const error = new Error('Project change content exceeds the per-file limit');
+          error.code = 'PROJECT_CHANGE_CONTENT_TOO_LARGE';
+          throw error;
+        }
+        totalChangeBytes += bytes;
+      }
+      if (totalChangeBytes > MAX_PROJECT_CHANGE_SET_BYTES) {
+        const error = new Error('Project change set exceeds the total content limit');
+        error.code = 'PROJECT_CHANGE_SET_TOO_LARGE';
+        throw error;
+      }
 
       const lockDirectory = path.join(
         operationReceiptStore?.directory || path.join(os.tmpdir(), 'orient-workspace-mutation-state'),
@@ -52,8 +85,6 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
       let retainWorkspaceLock = false;
       let intentCreated = false;
       try {
-      const proposals = Array.isArray(proposalResult.proposals) ? proposalResult.proposals : [];
-      if (proposals.length === 0) throw new Error('No approved change proposals were supplied');
       const operationId = typeof context.operationId === 'string' ? context.operationId : '';
       const tenantId = typeof context.tenantId === 'string' ? context.tenantId : '';
       if (operationReceiptStore && (!operationId || !tenantId)) {

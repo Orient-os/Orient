@@ -194,7 +194,7 @@ function readPrivateJson(filePath, { maxBytes = 8192, allowTwoLinks = false, cod
     const buffer = Buffer.allocUnsafe(maxBytes + 1);
     let total = 0;
     while (total < buffer.length) {
-      const count = fs.readSync(fd, buffer, total, buffer.length - total, null);
+      const count = fs.readSync(fd, buffer, total, buffer.length - total, total);
       if (count === 0) break;
       total += count;
     }
@@ -643,6 +643,7 @@ class WorkspaceMutationLock {
 
     const claim = acquireRecoveryClaim(this.lockPath, owner, this.workspaceId);
     let completed = false;
+    let primaryError;
     try {
       const recovery = stageRecoveryDecision(
         this.lockPath,
@@ -673,9 +674,21 @@ class WorkspaceMutationLock {
         outcome: operation.outcome,
         receipt: operation.receipt
       };
+    } catch (error) {
+      primaryError = error;
+      throw error;
     } finally {
       if (!completed) {
-        releaseRecoveryClaim(claim.claimPath, claim.claim, this.lockPath);
+        try {
+          releaseRecoveryClaim(claim.claimPath, claim.claim, this.lockPath);
+        } catch (cleanupError) {
+          if (primaryError) {
+            if (!Array.isArray(primaryError.cleanupErrors)) primaryError.cleanupErrors = [];
+            primaryError.cleanupErrors.push(cleanupError);
+          } else {
+            throw cleanupError;
+          }
+        }
       }
     }
   }

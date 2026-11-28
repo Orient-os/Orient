@@ -33,6 +33,42 @@ test('modifier revalidates the exact snapshot immediately before creating the du
   assert.equal(writes, 0);
 });
 
+test('execution service invokes the durable intent hook with validated snapshots before the first write', async () => {
+  const files = new Map([['config.json', 'before']]);
+  let intentPrepared = false;
+  const workspace = {
+    exists: async filePath => files.has(filePath),
+    readText: async filePath => files.get(filePath),
+    writeText: async (filePath, content) => {
+      assert.equal(intentPrepared, true);
+      files.set(filePath, content);
+    },
+    removeFile: async filePath => { files.delete(filePath); }
+  };
+  const modifier = new ProjectModifier({ workspace });
+  const service = new BuildExecutionService({
+    modifier,
+    verifier: { verify: async () => ({ status: 'passed', failed: 0, passed: 1 }) }
+  });
+  const result = await service.execute({
+    changeSet: {
+      changes: [{
+        action: 'update',
+        path: 'config.json',
+        content: 'after',
+        expectedContentSha256: crypto.createHash('sha256').update('before').digest('hex')
+      }]
+    },
+    beforeMutation: async ({ snapshots, changes }) => {
+      assert.equal(snapshots[0].content, 'before');
+      assert.equal(changes[0].content, 'after');
+      intentPrepared = true;
+    }
+  });
+  assert.equal(result.status, 'verified');
+  assert.equal(files.get('config.json'), 'after');
+});
+
 test('verification rollback refuses to overwrite an external change made after ORIENT applied its after-image', async () => {
   const files = new Map([['config.json', 'before']]);
   const workspace = {

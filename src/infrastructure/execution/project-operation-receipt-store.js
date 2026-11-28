@@ -33,7 +33,7 @@ function readBoundedFile(fd, maxBytes, code, label) {
   return buffer.subarray(0, total).toString('utf8');
 }
 
-function validIntentChanges(changes) {
+function validIntentChanges(changes, version = 3) {
   if (!Array.isArray(changes) || changes.length === 0 || changes.length > MAX_INTENT_CHANGES) return false;
   const paths = new Set();
   let totalBeforeBytes = 0;
@@ -46,6 +46,15 @@ function validIntentChanges(changes) {
     paths.add(change.path);
     if (change.action === 'create' && change.beforeExists) return false;
     if (change.action === 'update' && !change.beforeExists) return false;
+    if (version === 3) {
+      if (change.beforeExists) {
+        if (change.beforeType !== 'regular' ||
+            !Number.isInteger(change.beforeMode) ||
+            change.beforeMode < 0 || change.beforeMode > 0o777) return false;
+      } else if (change.beforeType !== 'absent' || change.beforeMode !== null) {
+        return false;
+      }
+    }
     if (!change.beforeExists) {
       return change.beforeContent === null && change.beforeContentSha256 === null;
     }
@@ -246,7 +255,8 @@ class ProjectOperationReceiptStore {
     }
 
     const validVersion = intent?.version === 1 ||
-      (intent?.version === 2 && validIntentChanges(intent.changes));
+      (intent?.version === 2 && validIntentChanges(intent.changes, 2)) ||
+      (intent?.version === 3 && validIntentChanges(intent.changes, 3));
     if (!intent || !validVersion || intent.status !== 'pending' ||
         intent.operationId !== operationId || intent.tenantId !== tenantId ||
         typeof intent.workspaceId !== 'string' || !/^[a-f0-9]{64}$/.test(intent.workspaceId) ||
@@ -264,14 +274,14 @@ class ProjectOperationReceiptStore {
       fail('Project operation intent identity is invalid', 'PROJECT_OPERATION_INTENT_INVALID');
     }
 
-    if (changes !== null && !validIntentChanges(changes)) {
+    if (changes !== null && !validIntentChanges(changes, 3)) {
       fail('Project operation before-image journal is invalid or exceeds its limits', 'PROJECT_OPERATION_INTENT_INVALID');
     }
 
     this.ensureDirectory();
     const filePath = this.intentPath(operationId, tenantId);
     const intent = {
-      version: changes === null ? 1 : 2,
+      version: changes === null ? 1 : 3,
       status: 'pending',
       operationId,
       tenantId,
@@ -387,7 +397,8 @@ class ProjectOperationReceiptStore {
 
     if (receipt.outcome === 'verified' || receipt.outcome === 'rolled_back') {
       const intent = this.readIntent({ operationId, tenantId });
-      const journalMatches = intent?.version === 2 &&
+      const journalMatches = (intent?.version === 2 || intent?.version === 3) &&
+        validIntentChanges(intent.changes, intent.version) &&
         intent.workspaceId === receipt.workspaceId &&
         intent.changeSetHash === receipt.changeSetHash &&
         (receipt.outcome === 'verified'
@@ -416,7 +427,10 @@ class ProjectOperationReceiptStore {
     if (intent && (intent.workspaceId !== workspaceId || intent.changeSetHash !== changeSetHash)) {
       fail('Project receipt identity does not match its pending intent', 'PROJECT_OPERATION_RECEIPT_INTENT_IDENTITY_CONFLICT');
     }
-    const hasCompleteJournal = Boolean(intent?.version === 2 && validIntentChanges(intent.changes));
+    const hasCompleteJournal = Boolean(
+      (intent?.version === 2 || intent?.version === 3) &&
+      validIntentChanges(intent.changes, intent.version)
+    );
     if (requireIntentJournal && !hasCompleteJournal) {
       fail('A complete durable before-image journal is required before committing this project receipt', 'PROJECT_OPERATION_RECEIPT_INTENT_INCOMPLETE');
     }

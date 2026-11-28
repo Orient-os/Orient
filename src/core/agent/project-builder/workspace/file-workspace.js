@@ -44,6 +44,10 @@ class FileWorkspace {
     );
   }
 
+  async getFileMetadata(relativePath) {
+    return this.policy.getFileMetadata(relativePath);
+  }
+
   async removeFile(relativePath) {
     return this.policy.removeFile(
       relativePath

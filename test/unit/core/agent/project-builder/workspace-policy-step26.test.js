@@ -198,6 +198,11 @@ test('ProjectModifier rollback preserves the original file permissions', async (
         content: '{"state":"after"}\n',
         expectedContentSha256: require('node:crypto').createHash('sha256').update('{"state":"before"}\n').digest('hex')
       }]
+    }, {
+      beforeMutation: async ({ snapshots }) => {
+        assert.equal(snapshots[0].type, 'regular');
+        assert.equal(snapshots[0].mode, 0o644);
+      }
     });
     assert.equal(fs.statSync(target).mode & 0o777, 0o644);
     await modifier.rollback(modification);

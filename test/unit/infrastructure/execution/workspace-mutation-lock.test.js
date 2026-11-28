@@ -175,6 +175,40 @@ test('recovery quarantines a confirmed dead process and preserves an operator re
   }
 });
 
+test('recovery resumes an identical durable decision staged before a process crash', async () => {
+  const f = await fixture();
+  let worker;
+  try {
+    worker = spawnLockWorker({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory, hold: true });
+    const first = await readFirstLine(worker);
+    worker.kill('SIGKILL');
+    await waitForExit(worker);
+
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    const staged = {
+      version: 1,
+      operatorId: 'test-operator',
+      reason: 'resume staged recovery',
+      recoveredAt: '2026-11-28T00:00:00.000Z',
+      owner: first.metadata
+    };
+    await fs.writeFile(path.join(lock.lockPath, 'recovery.json'), JSON.stringify(staged) + '\\n', { mode: 0o600 });
+
+    const recovered = lock.recover({
+      expectedToken: first.metadata.token,
+      operatorId: staged.operatorId,
+      reason: staged.reason
+    });
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.recovery.recoveredAt, staged.recoveredAt);
+    const durable = JSON.parse(await fs.readFile(path.join(recovered.quarantinePath, 'recovery.json'), 'utf8'));
+    assert.equal(durable.owner.token, first.metadata.token);
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('release refuses to remove a lock whose ownership token changed', async () => {
   const f = await fixture();
   const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });

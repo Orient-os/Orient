@@ -148,7 +148,7 @@ function createProjectTools({ projectRoot, policy = {}, operationReceiptStore = 
           retainWorkspaceLock = true;
           throw error;
         }
-        // Keep the durable intent as an audit marker. A verified receipt takes
+        // Keep the durable intent as an audit marker. A terminal receipt takes
         // precedence during reconciliation; pathname deletion is avoided because
         // checking identity and unlinking are not atomic.
       }

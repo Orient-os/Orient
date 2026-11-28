@@ -190,8 +190,23 @@ function readPrivateJson(filePath, { maxBytes = 8192, allowTwoLinks = false, cod
           (stats.uid !== process.getuid() || (stats.mode & 0o7777) !== 0o600))) {
       fail(label + ' is unsafe', code);
     }
-    const raw = fs.readFileSync(fd, 'utf8');
-    if (Buffer.byteLength(raw, 'utf8') > maxBytes) fail(label + ' exceeds its size limit', code);
+    const before = fs.fstatSync(fd);
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const count = fs.readSync(fd, buffer, total, buffer.length - total, null);
+      if (count === 0) break;
+      total += count;
+    }
+    const after = fs.fstatSync(fd);
+    if (total > maxBytes || before.dev !== after.dev || before.ino !== after.ino ||
+        before.size !== after.size || total !== after.size) {
+      fail(label + ' changed while being read or exceeds its size limit', code);
+    }
+    const raw = buffer.subarray(0, total).toString('utf8');
+    if (!Buffer.from(raw, 'utf8').equals(buffer.subarray(0, total))) {
+      fail(label + ' is not valid UTF-8', code);
+    }
     return JSON.parse(raw);
   } catch (error) {
     if (error.code === 'ELOOP') fail(label + ' must not be a symbolic link', code);
@@ -226,7 +241,7 @@ function validateRecoveryClaim(claim, parentToken, workspaceId) {
       !claim.process || typeof claim.process.hostname !== 'string' ||
       typeof claim.process.bootId !== 'string' ||
       typeof claim.process.pidNamespace !== 'string' ||
-      !/^pid:\\[\\d+\\]$/.test(claim.process.pidNamespace) ||
+      !/^pid:\[\d+\]$/.test(claim.process.pidNamespace) ||
       !Number.isSafeInteger(claim.process.pid) || claim.process.pid < 1 ||
       typeof claim.process.processStartIdentity !== 'string') {
     fail('Workspace recovery claim is malformed or belongs to another operation',
@@ -290,7 +305,6 @@ function acquireRecoveryClaim(lockPath, owner, workspaceId) {
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         fs.unlinkSync(temporaryPath);
-        parentToken = parentToken;
         continue;
       }
       fs.unlinkSync(temporaryPath);
@@ -338,6 +352,7 @@ function stageRecoveryDecision(lockPath, owner, operatorId, reason) {
   try {
     const existing = readPrivateJson(recoveryPath, {
       maxBytes: 8192,
+      allowTwoLinks: true,
       code: 'PROJECT_WORKSPACE_LOCK_CORRUPT',
       label: 'Workspace recovery decision'
     });

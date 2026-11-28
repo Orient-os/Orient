@@ -264,7 +264,7 @@ class ProjectWorkspaceRecovery {
         this.verify(intent.changes, 'before');
         return { outcome: 'rolled_back', receipt: existingReceipt };
       }
-      if (existingReceipt.outcome === 'verified' || existingReceipt.outcome === undefined) {
+      if (existingReceipt.outcome === 'verified') {
         this.verify(intent.changes, 'after');
         return { outcome: 'verified', receipt: existingReceipt };
       }

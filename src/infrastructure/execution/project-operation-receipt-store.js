@@ -122,7 +122,10 @@ function syncDirectory(directory) {
     fd = fs.openSync(directory, 'r');
     fs.fsyncSync(fd);
   } catch (error) {
-    if (!['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+    const unsupported = new Error('Receipt storage does not provide durable directory synchronization');
+    unsupported.code = 'PROJECT_OPERATION_RECEIPT_UNSUPPORTED_FILESYSTEM';
+    unsupported.cause = error;
+    throw unsupported;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }

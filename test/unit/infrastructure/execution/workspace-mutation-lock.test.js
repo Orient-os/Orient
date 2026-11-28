@@ -151,6 +151,27 @@ test('different workspace identities are isolated even when they share lock stor
   }
 });
 
+test('a reused PID is classified as a dead recorded owner, not as the current owner', async () => {
+  const f = await fixture();
+  let lease;
+  try {
+    const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });
+    lease = await lock.acquire();
+    const ownerPath = path.join(lock.lockPath, 'owner.json');
+    const owner = JSON.parse(await fs.readFile(ownerPath, 'utf8'));
+    owner.processStartIdentity = '0';
+    await fs.writeFile(ownerPath, JSON.stringify(owner) + '\n', { mode: 0o600 });
+
+    const classification = lock.classify();
+    assert.equal(classification.state, 'recovery_required');
+    assert.equal(classification.reason, 'owner_process_replaced');
+    assert.equal(classification.owner.token, lease.metadata.token);
+    assert.equal(classification.recoveryRequired, true);
+  } finally {
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+});
+
 test('recovery refuses a live owner and requires an explicit operator decision', async () => {
   const f = await fixture();
   const lock = new WorkspaceMutationLock({ workspaceRoot: f.workspaceRoot, lockDirectory: f.lockDirectory });

@@ -93,6 +93,7 @@ test('a crashed owner leaves a fail-closed lock for explicit operator recovery',
     assert.equal(typeof first.metadata.token, 'string');
     assert.equal(typeof first.metadata.hostname, 'string');
     assert.equal(typeof first.metadata.bootId, 'string');
+    assert.equal(typeof first.metadata.pidNamespace, 'string');
     assert.equal(Number.isInteger(first.metadata.pid), true);
     assert.equal(typeof first.metadata.processStartIdentity, 'string');
     worker.kill('SIGKILL');

@@ -111,6 +111,10 @@ function readOwner(lockPath) {
         typeof owner.bootId !== 'string' || !owner.bootId ||
         !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
         typeof owner.processStartIdentity !== 'string' ||
+        ((owner.operationId === undefined) !== (owner.tenantId === undefined)) ||
+        (owner.operationId !== undefined &&
+          (typeof owner.operationId !== 'string' || !owner.operationId || owner.operationId.length > 256 ||
+            typeof owner.tenantId !== 'string' || !owner.tenantId || owner.tenantId.length > 128)) ||
         typeof owner.acquiredAt !== 'string' ||
         typeof owner.workspaceId !== 'string' || !/^[a-f0-9]{64}$/.test(owner.workspaceId)) {
       fail('Workspace lock owner record is malformed', 'PROJECT_WORKSPACE_LOCK_CORRUPT');
@@ -133,7 +137,7 @@ function readOwner(lockPath) {
 }
 
 class WorkspaceMutationLock {
-  constructor({ workspaceRoot, lockDirectory } = {}) {
+  constructor({ workspaceRoot, lockDirectory, operationId = '', tenantId = '' } = {}) {
     if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) {
       throw new TypeError('workspaceRoot is required');
     }
@@ -143,6 +147,13 @@ class WorkspaceMutationLock {
     if (process.platform !== 'linux') {
       fail('Cross-process workspace mutation locks are supported only on Linux hosts', 'PROJECT_WORKSPACE_LOCK_UNSUPPORTED_PLATFORM');
     }
+    if ((operationId || tenantId) &&
+        (typeof operationId !== 'string' || !operationId || operationId.length > 256 ||
+          typeof tenantId !== 'string' || !tenantId || tenantId.length > 128)) {
+      fail('Workspace lock operation identity is invalid', 'PROJECT_WORKSPACE_LOCK_IDENTITY_INVALID');
+    }
+    this.operationId = operationId;
+    this.tenantId = tenantId;
     this.workspaceRoot = fs.realpathSync.native(path.resolve(workspaceRoot));
     this.lockDirectory = ensurePrivateStorageDirectory(path.resolve(lockDirectory), {
       create: true,
@@ -174,6 +185,10 @@ class WorkspaceMutationLock {
       version: 1,
       token,
       workspaceId: this.workspaceId,
+      ...(this.operationId && this.tenantId ? {
+        operationId: this.operationId,
+        tenantId: this.tenantId
+      } : {}),
       hostname: os.hostname(),
       bootId: readBootId(),
       pid: process.pid,

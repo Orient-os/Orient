@@ -74,7 +74,7 @@ function syncDirectory(directory) {
 }
 
 /**
- * Durable, tenant-scoped receipts for verified project changes.
+ * Durable, tenant-scoped receipts for verified and safely rolled-back project operations.
  * The receipt directory belongs to application data, never to the workspace.
  * Writers use exclusive directory locks; stale locks fail closed and require operator recovery.
  */

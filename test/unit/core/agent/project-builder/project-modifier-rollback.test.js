@@ -135,6 +135,50 @@ test('verification exceptions trigger rollback before the workspace lock can be 
   assert.equal(result.error.message, 'verification infrastructure failed');
 });
 
+test('rollback refuses a terminal rolled-back outcome when an untouched file changed externally', async () => {
+  const files = new Map([
+    ['first.txt', 'before-first'],
+    ['second.txt', 'before-second']
+  ]);
+  const workspace = {
+    exists: async filePath => files.has(filePath),
+    readText: async filePath => files.get(filePath),
+    writeText: async (filePath, content) => { files.set(filePath, content); },
+    removeFile: async filePath => { files.delete(filePath); }
+  };
+  const modifier = new ProjectModifier({ workspace });
+  const service = new BuildExecutionService({
+    modifier,
+    verifier: { verify: async () => ({ status: 'failed', failed: 1, passed: 0 }) }
+  });
+
+  const result = await service.execute({
+    changeSet: {
+      changes: [
+        {
+          action: 'update',
+          path: 'first.txt',
+          content: 'after-first',
+          expectedContentSha256: crypto.createHash('sha256').update('before-first').digest('hex')
+        },
+        {
+          action: 'update',
+          path: 'second.txt',
+          content: 'after-second',
+          expectedContentSha256: crypto.createHash('sha256').update('before-second').digest('hex')
+        }
+      ]
+    },
+    beforeMutation: async () => { files.set('second.txt', 'external-change'); }
+  });
+
+  assert.equal(result.status, 'rollback-failed');
+  assert.equal(result.rollback?.rolledBack, false);
+  assert.equal(files.get('first.txt'), 'before-first');
+  assert.equal(files.get('second.txt'), 'external-change');
+  assert.equal(result.rollback?.rollbackErrors?.[0]?.code, 'WORKSPACE_ROLLBACK_CONFLICT');
+});
+
 test('partial apply rollback only touches files whose current bytes still match this operation after-image', async () => {
   const files = new Map([
     ['first.txt', 'before-first'],

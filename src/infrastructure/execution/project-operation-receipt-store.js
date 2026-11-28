@@ -15,7 +15,10 @@ function digest(value) {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-const MAX_INTENT_BYTES = 4 * 1024;
+const MAX_INTENT_BYTES = 512 * 1024;
+const MAX_INTENT_CHANGES = 10;
+const MAX_INTENT_BEFORE_BYTES = 256 * 1024;
+const MAX_INTENT_BEFORE_FILE_BYTES = 32 * 1024;
 const MAX_RECEIPT_BYTES = 1024 * 1024;
 
 function readBoundedFile(fd, maxBytes, code, label) {
@@ -28,6 +31,33 @@ function readBoundedFile(fd, maxBytes, code, label) {
   }
   if (total > maxBytes) fail(label + ' exceeds its maximum permitted size', code);
   return buffer.subarray(0, total).toString('utf8');
+}
+
+function validIntentChanges(changes) {
+  if (!Array.isArray(changes) || changes.length === 0 || changes.length > MAX_INTENT_CHANGES) return false;
+  const paths = new Set();
+  let totalBeforeBytes = 0;
+  return changes.every(change => {
+    if (!change || !['create', 'update'].includes(change.action) ||
+        typeof change.path !== 'string' || !change.path || change.path.length > 512 ||
+        paths.has(change.path) || typeof change.beforeExists !== 'boolean' ||
+        typeof change.afterContentSha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(change.afterContentSha256)) return false;
+    paths.add(change.path);
+    if (change.action === 'create' && change.beforeExists) return false;
+    if (change.action === 'update' && !change.beforeExists) return false;
+    if (!change.beforeExists) {
+      return change.beforeContent === null && change.beforeContentSha256 === null;
+    }
+    if (typeof change.beforeContent !== 'string' ||
+        typeof change.beforeContentSha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(change.beforeContentSha256)) return false;
+    const bytes = Buffer.byteLength(change.beforeContent, 'utf8');
+    totalBeforeBytes += bytes;
+    return bytes <= MAX_INTENT_BEFORE_FILE_BYTES &&
+      totalBeforeBytes <= MAX_INTENT_BEFORE_BYTES &&
+      digest(change.beforeContent) === change.beforeContentSha256;
+  });
 }
 
 function validRollbackOutcome(result) {
@@ -184,7 +214,9 @@ class ProjectOperationReceiptStore {
       }
     }
 
-    if (!intent || intent.version !== 1 || intent.status !== 'pending' ||
+    const validVersion = intent?.version === 1 ||
+      (intent?.version === 2 && validIntentChanges(intent.changes));
+    if (!intent || !validVersion || intent.status !== 'pending' ||
         intent.operationId !== operationId || intent.tenantId !== tenantId ||
         typeof intent.workspaceId !== 'string' || !/^[a-f0-9]{64}$/.test(intent.workspaceId) ||
         typeof intent.changeSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(intent.changeSetHash) ||
@@ -194,28 +226,37 @@ class ProjectOperationReceiptStore {
     return intent;
   }
 
-  beginIntent({ operationId, tenantId, workspaceId, changeSetHash }) {
+  beginIntent({ operationId, tenantId, workspaceId, changeSetHash, changes = null }) {
     if (!validIdentity({ operationId, tenantId }) ||
         typeof workspaceId !== 'string' || !/^[a-f0-9]{64}$/.test(workspaceId) ||
         typeof changeSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(changeSetHash)) {
       fail('Project operation intent identity is invalid', 'PROJECT_OPERATION_INTENT_INVALID');
     }
 
+    if (changes !== null && !validIntentChanges(changes)) {
+      fail('Project operation before-image journal is invalid or exceeds its limits', 'PROJECT_OPERATION_INTENT_INVALID');
+    }
+
     this.ensureDirectory();
     const filePath = this.intentPath(operationId, tenantId);
     const intent = {
-      version: 1,
+      version: changes === null ? 1 : 2,
       status: 'pending',
       operationId,
       tenantId,
       workspaceId,
       changeSetHash,
+      ...(changes === null ? {} : { changes }),
       recordedAt: new Date().toISOString()
     };
+    const serializedIntent = JSON.stringify(intent) + '\n';
+    if (Buffer.byteLength(serializedIntent, 'utf8') > MAX_INTENT_BYTES) {
+      fail('Project operation before-image journal exceeds its maximum permitted size', 'PROJECT_OPERATION_INTENT_INVALID');
+    }
     let fd;
     try {
       fd = fs.openSync(filePath, 'wx', 0o600);
-      fs.writeFileSync(fd, JSON.stringify(intent) + '\n', 'utf8');
+      fs.writeFileSync(fd, serializedIntent, 'utf8');
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
